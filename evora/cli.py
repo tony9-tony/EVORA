@@ -8,7 +8,13 @@ Usage:
     evora plan "Build a REST API with FastAPI"
     evora analyze
     evora config
-    evora memory
+    evora memory [--type tasks|long-term|all]
+    evora remember "Use pytest for testing" --type preference --importance 0.8
+    evora forget <memory_id>
+    evora memories "What test framework"
+    evora whoami
+    evora identity set --name "Alice" --authority creator
+    evora identity list
 """
 
 import argparse
@@ -19,8 +25,9 @@ from pathlib import Path
 from evora.analyzer import ProjectAnalyzer
 from evora.approval import ApprovalSystem
 from evora.config import load_config
+from evora.identity import IdentityService, AuthorityLevel, Identity
 from evora.logger import Logger
-from evora.memory import Memory
+from evora.memory import Memory, MemoryService, LongTermMemoryEntry, MemoryFilter
 from evora.model import ModelManager, OpenAIProvider
 from evora.planner import Planner
 from evora.agent import Agent, AgentConfig
@@ -155,15 +162,26 @@ def cmd_memory(args):
     config = load_config()
     memory = Memory(config.memory_dir, project_name=Path(config.workspace_dir).name)
 
-    tasks = memory.store.list_tasks(limit=20)
+    view_type = getattr(args, "type", None) or "all"
 
-    if not tasks:
-        print("No tasks found in memory.")
-        return
+    if view_type in ("all", "long-term", "ltm"):
+        _cmd_memory_longterm(config, memory)
+
+    if view_type in ("all", "tasks"):
+        _cmd_memory_tasks(memory)
+
+
+def _cmd_memory_tasks(memory):
+    """Display recent task entries."""
+    tasks = memory.store.list_tasks(limit=20)
 
     print(f"\n{'=' * 60}")
     print(f"  EVORA Memory - Recent Tasks")
     print(f"{'=' * 60}\n")
+
+    if not tasks:
+        print("No tasks found in memory.")
+        return
 
     for t in tasks:
         status = t.get("status", "unknown")
@@ -181,6 +199,210 @@ def cmd_memory(args):
         print()
 
     print(f"{'=' * 60}\n")
+
+
+def _cmd_memory_longterm(config, memory):
+    """Display long-term memory entries."""
+    entries = memory.store.list_ltm_entries(project=Path(config.workspace_dir).name, limit=50)
+
+    print(f"\n{'=' * 60}")
+    print(f"  EVORA Memory - Long-Term Knowledge")
+    print(f"{'=' * 60}\n")
+
+    if not entries:
+        print("No long-term memories found.")
+    else:
+        for e in entries:
+            pinned_str = " [PINNED]" if e.pinned else ""
+            print(f"  [{e.memory_type}]{pinned_str} (importance: {e.importance:.1f}) {e.id[:8]}")
+            print(f"    Content: {e.content[:200]}")
+            if e.tags:
+                print(f"    Tags: {', '.join(e.tags)}")
+            print(f"    Project: {e.project or 'global'}")
+            print()
+
+    print(f"{'=' * 60}\n")
+
+
+def cmd_remember(args):
+    """Store a memory explicitly."""
+    config = load_config()
+    identity_service = IdentityService(identity_dir=config.identity_dir)
+    memory_service = MemoryService(
+        memory=Memory(config.memory_dir, project_name=Path(config.workspace_dir).name),
+        identity_service=identity_service,
+    )
+
+    try:
+        entry = memory_service.remember(
+            content=args.content,
+            memory_type=args.type,
+            importance=args.importance,
+            project=args.project if args.project != "global" else None,
+            tags=args.tags.split(",") if args.tags else [],
+            pinned=args.pinned,
+        )
+        print(f"Memory stored: id={entry.id[:12]} type={entry.memory_type} project={entry.project or 'global'}")
+    except PermissionError as e:
+        print(f"[DENIED] {e}")
+        sys.exit(1)
+
+
+def cmd_forget(args):
+    """Delete a memory entry."""
+    config = load_config()
+    identity_service = IdentityService(identity_dir=config.identity_dir)
+    memory_service = MemoryService(
+        memory=Memory(config.memory_dir, project_name=Path(config.workspace_dir).name),
+        identity_service=identity_service,
+    )
+
+    try:
+        if args.all:
+            deleted = memory_service.forget_all(
+                memory_type=args.type if args.type != "all" else None,
+                project=Path(config.workspace_dir).name if not args.global_only else None,
+            )
+            print(f"Deleted {deleted} memory entries.")
+        else:
+            success = memory_service.forget(args.id)
+            if success:
+                print(f"Memory deleted: {args.id}")
+            else:
+                print(f"Memory not found: {args.id}")
+    except PermissionError as e:
+        print(f"[DENIED] {e}")
+        sys.exit(1)
+
+
+def cmd_memories(args):
+    """List and search memories ('what do you remember')."""
+    config = load_config()
+    identity_service = IdentityService(identity_dir=config.identity_dir)
+    memory_service = MemoryService(
+        memory=Memory(config.memory_dir, project_name=Path(config.workspace_dir).name),
+        identity_service=identity_service,
+    )
+
+    try:
+        if args.query:
+            results = memory_service.search_memories(
+                query=args.query,
+                project=Path(config.workspace_dir).name if not args.global_only else None,
+                limit=args.limit,
+            )
+            print(f"\nFound {len(results)} matching memories:\n")
+            for e in results:
+                pinned_str = " [PINNED]" if e.pinned else ""
+                print(f"  [{e.memory_type}]{pinned_str} {e.content[:200]}")
+                print(f"    id={e.id[:12]} project={e.project or 'global'}")
+                print()
+        else:
+            entries = memory_service.list_memories(
+                project=Path(config.workspace_dir).name if not args.global_only else None,
+                memory_type=args.type if args.type != "all" else None,
+                limit=args.limit,
+            )
+            print(f"\nFound {len(entries)} memories:\n")
+            for e in entries:
+                pinned_str = " [PINNED]" if e.pinned else ""
+                print(f"  [{e.memory_type}]{pinned_str} (importance: {e.importance:.1f}) {e.id[:12]}")
+                print(f"    Content: {e.content[:200]}")
+                if e.tags:
+                    print(f"    Tags: {', '.join(e.tags)}")
+                print(f"    Project: {e.project or 'global'}")
+                print()
+    except PermissionError as e:
+        print(f"[DENIED] {e}")
+        sys.exit(1)
+
+
+def cmd_whoami(args):
+    """Show current identity and authority."""
+    config = load_config()
+    identity_service = IdentityService(identity_dir=config.identity_dir)
+
+    identity = identity_service.current_identity()
+    creator = identity_service.get_creator()
+
+    print(f"\n{'=' * 60}")
+    print(f"  EVORA Identity")
+    print(f"{'=' * 60}\n")
+    print(f"  Current identity: {identity.name}")
+    print(f"  Authority level:  {identity.authority.value}")
+    print(f"  ID:               {identity.id}")
+    print(f"  Created:          {identity.created_at}")
+    if creator and creator.id != identity.id:
+        print(f"\n  Creator identity: {creator.name}")
+        print(f"  Creator ID:       {creator.id}")
+    print(f"\n{'=' * 60}\n")
+
+
+def cmd_identity_set(args):
+    """Set identity for the current session (CREATOR only, or first-time bootstrap)."""
+    config = load_config()
+    identity_service = IdentityService(identity_dir=config.identity_dir)
+
+    authority = AuthorityLevel(args.authority)
+
+    # Bootstrap: if no creator exists and user is trying to set creator,
+    # allow first-time setup without authorization
+    if authority == AuthorityLevel.CREATOR and not identity_service.store.get_creator():
+        identity = Identity.create(name=args.name, authority=authority)
+        identity_service.store.bootstrap_creator(args.name)
+        print(f"Bootstrap: creator identity set: {identity.name} ({authority.value})")
+        return
+
+    try:
+        identity_service.require_authority("change_identity")
+    except PermissionError as e:
+        print(f"[DENIED] {e}")
+        sys.exit(1)
+
+    identity = Identity.create(name=args.name, authority=authority)
+    identity_service.store.save_identity(identity)
+    identity_service.store.set_current(identity)
+
+    if authority == AuthorityLevel.CREATOR:
+        identity_service.store.set_creator(identity)
+
+    print(f"Identity set: {identity.name} ({authority.value})")
+
+
+def cmd_identity(args):
+    """Handle identity subcommands."""
+    config = load_config()
+
+    if getattr(args, "identity_cmd", None) == "set":
+        cmd_identity_set(args)
+    elif getattr(args, "identity_cmd", None) == "list":
+        identity_service = IdentityService(identity_dir=config.identity_dir)
+
+        # Bootstrap mode: if no identities exist yet, show setup instructions
+        identities = identity_service.store.list_identities()
+        if not identities:
+            print("No identities configured.\n")
+            print("Run: evora identity set --name <name> --authority <level>")
+            print("      (first setup does not require existing creator)")
+            return
+
+        try:
+            identity_service.require_authority("change_identity")
+        except PermissionError as e:
+            print(f"[DENIED] {e}")
+            sys.exit(1)
+
+        current = identity_service.store.get_current()
+        print(f"\n{'=' * 60}")
+        print(f"  Known Identities")
+        print(f"{'=' * 60}\n")
+        for ident in identities:
+            marker = " *" if ident.id == current.id else ""
+            print(f"  {ident.name}{marker} ({ident.authority.value}) id={ident.id[:12]} created={ident.created_at[:19]}")
+        print(f"\n{'=' * 60}\n")
+    else:
+        print("Usage: evora identity set --name <name> --authority <level>")
+        print("       evora identity list")
 
 
 async def async_run(args):
@@ -213,6 +435,10 @@ async def async_run(args):
     planner = Planner(manager, logger)
     tools = ToolRegistry(security, logger)
 
+    # Phase 3: Set up identity and memory services
+    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
+    memory_service = memory.get_memory_service(identity_service=identity_service, logger=logger)
+
     agent_config = AutonomousConfig(
         max_retries=getattr(args, 'max_retries', 3),
         retry_delay=1.0,
@@ -231,6 +457,8 @@ async def async_run(args):
         logger=logger,
         analyzer=analyzer,
         config=agent_config,
+        identity_service=identity_service,
+        memory_service=memory_service,
     )
 
     try:
@@ -298,7 +526,57 @@ Examples:
     analyze_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
 
     subparsers.add_parser("config", help="Show/load configuration")
-    subparsers.add_parser("memory", help="View task and project memory")
+    memory_parser = subparsers.add_parser("memory", help="View task and project memory")
+    memory_parser.add_argument("--type", type=str, default="all",
+                               choices=["all", "tasks", "long-term", "ltm"],
+                               help="View tasks, long-term, or all memory")
+
+    # Phase 3: User-controlled memory commands
+    remember_parser = subparsers.add_parser("remember", help="Store a memory explicitly")
+    remember_parser.add_argument("content", type=str, help="The memory content to store")
+    remember_parser.add_argument("--type", type=str, default="preference",
+                                  choices=["preference", "decision", "learning", "instruction"],
+                                  help="Memory type (default: preference)")
+    remember_parser.add_argument("--importance", type=float, default=0.5,
+                                  help="Importance score 0.0-1.0 (default: 0.5)")
+    remember_parser.add_argument("--project", type=str, default=None,
+                                  help="Project scope (default: project-relative or 'global')")
+    remember_parser.add_argument("--tags", type=str, default=None,
+                                  help="Comma-separated tags")
+    remember_parser.add_argument("--pinned", action="store_true",
+                                  help="Pin this memory (always retrieved)")
+
+    forget_parser = subparsers.add_parser("forget", help="Delete a memory entry")
+    forget_parser.add_argument("id", type=str, nargs="?", default=None,
+                                help="Memory entry ID to delete")
+    forget_parser.add_argument("--all", action="store_true",
+                                help="Delete all matching entries")
+    forget_parser.add_argument("--type", type=str, default="all",
+                                help="Filter by memory type (use with --all)")
+    forget_parser.add_argument("--global-only", action="store_true",
+                              help="Match only global (non-project) memories")
+
+    memories_parser = subparsers.add_parser("memories", aliases=["recall"],
+                                             help="List/search memories ('what do you remember')")
+    memories_parser.add_argument("query", type=str, nargs="?", default=None,
+                                  help="Search query (if omitted, list all)")
+    memories_parser.add_argument("--type", type=str, default="all",
+                                  help="Filter by memory type")
+    memories_parser.add_argument("--limit", type=int, default=50,
+                                  help="Maximum results to show")
+    memories_parser.add_argument("--global-only", action="store_true",
+                                  help="Search only global (non-project) memories")
+
+    whoami_parser = subparsers.add_parser("whoami", help="Show current identity and authority")
+
+    identity_parser = subparsers.add_parser("identity", help="Identity management (CREATOR only)")
+    identity_sub = identity_parser.add_subparsers(dest="identity_cmd", help="Identity subcommands")
+    identity_set = identity_sub.add_parser("set", help="Set current identity")
+    identity_set.add_argument("--name", type=str, required=True, help="Identity name")
+    identity_set.add_argument("--authority", type=str, required=True,
+                               choices=["creator", "admin", "user", "guest"],
+                               help="Authority level")
+    identity_list = identity_sub.add_parser("list", help="List all known identities")
 
     args = parser.parse_args()
 
@@ -312,6 +590,16 @@ Examples:
         cmd_config(args)
     elif args.command == "memory":
         cmd_memory(args)
+    elif args.command == "remember":
+        cmd_remember(args)
+    elif args.command == "forget":
+        cmd_forget(args)
+    elif args.command in ("memories", "recall"):
+        cmd_memories(args)
+    elif args.command == "whoami":
+        cmd_whoami(args)
+    elif args.command == "identity":
+        cmd_identity(args)
     elif args.command == "plan":
         asyncio.run(async_plan(args))
     elif args.command == "run":

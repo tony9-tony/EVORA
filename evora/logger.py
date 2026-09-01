@@ -40,6 +40,7 @@ class Stage(str, Enum):
     OBSERVE = "OBSERVE"
     EVALUATE = "EVALUATE"
     REASON = "REASON"
+    MEMORY = "MEMORY"
 
 
 STAGE_COLORS = {
@@ -58,6 +59,7 @@ STAGE_COLORS = {
     Stage.OBSERVE: Fore.LIGHTWHITE_EX,
     Stage.EVALUATE: Fore.LIGHTGREEN_EX,
     Stage.REASON: Fore.LIGHTRED_EX,
+    Stage.MEMORY: Fore.LIGHTBLUE_EX,
 }
 
 STAGE_EMOJIS = {
@@ -76,6 +78,7 @@ STAGE_EMOJIS = {
     Stage.OBSERVE: "[👁️]",
     Stage.EVALUATE: "[⚖️]",
     Stage.REASON: "[💭]",
+    Stage.MEMORY: "[💾]",
 }
 
 
@@ -158,6 +161,9 @@ class Logger:
 
     def reason(self, msg: str):
         self._log(Stage.REASON, msg)
+
+    def memory(self, msg: str):
+        self._log(Stage.MEMORY, msg)
 
     def verify(self, msg: str):
         self._log(Stage.SUCCESS, msg)

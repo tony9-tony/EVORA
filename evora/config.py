@@ -40,8 +40,12 @@ class Config:
     log_level: str = "INFO"
     log_file: str = ""
     memory_dir: str = ""
+    identity_dir: str = ""
     providers: dict = field(default_factory=dict)
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
+
+    # Phase 3: creator identity file (protected, separate from conversational text)
+    creator_identity_file: str = ""
 
 
 def _get_evora_dir() -> Path:
@@ -145,6 +149,16 @@ def load_config(config_path: Optional[str] = None) -> Config:
         memory_dir = str(evora_dir / "memory")
     Path(memory_dir).mkdir(parents=True, exist_ok=True)
 
+    identity_dir = config_data.get("identity_dir", "") or os.environ.get("EVORA_IDENTITY_DIR", "")
+    if not identity_dir:
+        identity_dir = str(evora_dir / "identity")
+    Path(identity_dir).mkdir(parents=True, exist_ok=True)
+
+    creator_identity_file = (
+        config_data.get("creator_identity_file", "")
+        or os.environ.get("EVORA_CREATOR_IDENTITY_FILE", "")
+    )
+
     log_file = config_data.get("log_file", "") or os.environ.get("EVORA_LOG_FILE", "")
     if not log_file:
         log_file = str(evora_dir / "evora.log")
@@ -157,11 +171,13 @@ def load_config(config_path: Optional[str] = None) -> Config:
     return Config(
         api_key=config_data.get("api_key", os.environ.get("EVORA_API_KEY", "")),
         model=config_data.get("model", os.environ.get("EVORA_MODEL", "gpt-4o")),
-        base_url=config_data.get("base_url", os.environ.get("EVORA_BASE_URL", "https://api.openai.com/v1")),
+        base_url=config_data.get("base_url", os.environ.get("EVORA_BASE_URL", "https://api.anthropic.com")),
         workspace_dir=workspace,
         log_level=config_data.get("log_level", os.environ.get("EVORA_LOG_LEVEL", "INFO")),
         log_file=log_file,
         memory_dir=memory_dir,
+        identity_dir=identity_dir,
         providers=providers,
         permissions=permissions,
+        creator_identity_file=creator_identity_file,
     )

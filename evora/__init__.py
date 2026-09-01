@@ -9,4 +9,4 @@ Core workflow:
 """
 
 __version__ = "0.1.0"
-__all__ = ["core", "models", "tools", "security", "memory", "planner", "analyzer"]
+__all__ = ["core", "models", "tools", "security", "memory", "planner", "analyzer", "identity"]

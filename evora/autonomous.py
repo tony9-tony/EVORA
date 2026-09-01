@@ -21,6 +21,7 @@ from evora.planner import Planner, Plan
 from evora.approval import ApprovalSystem, ApprovalDecision
 from evora.tools import ToolRegistry
 from evora.memory import Memory
+from evora.identity import IdentityService
 from evora.security import PermissionManager, PermissionLevel
 from evora.analyzer import ProjectAnalyzer
 
@@ -69,6 +70,8 @@ class AutonomousAgent:
         logger: Logger,
         analyzer: ProjectAnalyzer,
         config: Optional[AutonomousConfig] = None,
+        identity_service: Optional[IdentityService] = None,
+        memory_service: Optional[Any] = None,
     ):
         self.model_manager = model_manager
         self.planner = planner
@@ -92,6 +95,14 @@ class AutonomousAgent:
         self._current_plan: Optional[Plan] = None
         self._is_stopped = False
 
+        # Phase 3: Identity and memory service integration
+        self.identity_service = identity_service
+        self.memory_service = memory_service
+
+        if identity_service is None and memory_service is not None:
+            # If memory_service was provided without identity, create a minimal one
+            self.identity_service = memory_service.identity_service
+
     async def run(self, request: str, project_context: Optional[dict] = None) -> str:
         """Execute the full autonomous loop.
 
@@ -113,6 +124,24 @@ class AutonomousAgent:
 
         self._current_state = state
         self._save_memory(state)
+
+        # Phase 3: Retrieve relevant memory before acting
+        if self.memory_service is not None:
+            try:
+                relevant = self.memory_service.retrieve_relevant(
+                    goal=state.goal,
+                    project=str(state.workspace),
+                )
+                if relevant:
+                    state.project_context["relevant_memories"] = [
+                        r.to_dict() for r in relevant
+                    ]
+                    self.logger.memory(
+                        f"Retrieved {len(relevant)} relevant memories for goal: {state.goal[:80]}"
+                    )
+            except Exception as e:
+                self.logger.memory(f"Memory retrieval skipped: {e}")
+
         self.logger.understand(f"Understood request: {request[:100]}")
 
         iteration = 0
@@ -523,6 +552,15 @@ class AutonomousAgent:
         report += f"\n{'=' * 60}\n"
 
         self._save_memory(state)
+
+        # Phase 3: Archive task outcome to long-term memory
+        if self.memory_service is not None:
+            try:
+                self.memory_service.archive_task_outcome(state)
+                self.memory_service.update_project_memory(state)
+            except Exception as e:
+                self.logger.memory(f"Memory archiving skipped: {e}")
+
         return report
 
     def _save_memory(self, state: TaskState) -> None:
