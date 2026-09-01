@@ -28,6 +28,7 @@ from evora.tools import (
     AnalyzeCodeTool,
     WebSearchTool,
     WebFetchTool,
+    SelfAnalyzeTool,
 )
 from evora.security import PermissionManager, PermissionLevel
 from evora.logger import Logger
@@ -317,3 +318,36 @@ class TestWebSearchTool:
             assert "not approved" not in result.error.lower()
         except Exception:
             pytest.skip("Network unavailable for web search test")
+
+
+class TestSelfAnalyzeTool:
+
+    def test_self_analyze_empty_dir(self, tmp_path, security, logger):
+        """SelfAnalyzeTool should work on an empty directory."""
+        tool = SelfAnalyzeTool(security, logger)
+        result = run_async(tool.execute())
+        assert result.success is True
+        assert "Self-Analysis Report" in result.output
+        assert "Source files:" in result.output
+
+    def test_self_analyze_with_files(self, tmp_path, security, logger):
+        """SelfAnalyzeTool should detect source and test files."""
+        (tmp_path / "app.py").write_text("def hello():\n    pass\n")
+        (tmp_path / "test_app.py").write_text("def test_hello():\n    pass\n")
+
+        tool = SelfAnalyzeTool(security, logger)
+        result = run_async(tool.execute())
+        assert result.success is True
+        assert "1" in result.output  # at least 1 source file
+        json_data = result.data
+        assert json_data["metrics"]["source_files"] >= 1
+        assert json_data["metrics"]["test_files"] >= 1
+
+    def test_self_analyze_detects_todos(self, tmp_path, security, logger):
+        """SelfAnalyzeTool should detect TODO/FIXME comments."""
+        (tmp_path / "todo.py").write_text("# TODO: fix this later\n")
+
+        tool = SelfAnalyzeTool(security, logger)
+        result = run_async(tool.execute())
+        assert result.success is True
+        assert any(i["type"] == "technical_debt" for i in result.data["issues"])

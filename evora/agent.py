@@ -221,6 +221,24 @@ class Agent:
                     return await self._tool_analyze(step)
                 elif step.action_type == "create_directory":
                     return await self._tool_create_dir(step)
+                elif step.action_type == "git_status":
+                    return await self._tool_git_status(step)
+                elif step.action_type == "git_diff":
+                    return await self._tool_git_diff(step)
+                elif step.action_type == "git_commit":
+                    return await self._tool_git_commit(step)
+                elif step.action_type == "git_branch":
+                    return await self._tool_git_branch(step)
+                elif step.action_type == "git_log":
+                    return await self._tool_git_log(step)
+                elif step.action_type == "analyze_project":
+                    return await self._tool_analyze_project(step)
+                elif step.action_type == "analyze_code":
+                    return await self._tool_analyze_code(step)
+                elif step.action_type == "web_search":
+                    return await self._tool_web_search(step)
+                elif step.action_type == "web_fetch":
+                    return await self._tool_web_fetch(step)
                 else:
                     self.logger.error(f"Unknown action type: {step.action_type}")
                     return False
@@ -282,6 +300,59 @@ class Agent:
     async def _tool_create_dir(self, step: PlanStep) -> bool:
         path = step.action_args.get("path", "")
         result = await self.tools.execute("create_directory", path=path)
+        return result.success
+
+    async def _tool_git_status(self, step: PlanStep) -> bool:
+        path = step.action_args.get("path", ".")
+        result = await self.tools.execute("git_status", path=path)
+        return result.success
+
+    async def _tool_git_diff(self, step: PlanStep) -> bool:
+        path = step.action_args.get("path", ".")
+        staged = step.action_args.get("staged", False)
+        file_path = step.action_args.get("file", "")
+        result = await self.tools.execute("git_diff", path=path, staged=staged, file=file_path)
+        return result.success
+
+    async def _tool_git_commit(self, step: PlanStep) -> bool:
+        path = step.action_args.get("path", ".")
+        message = step.action_args.get("message", "")
+        result = await self.tools.execute("git_commit", path=path, message=message)
+        return result.success
+
+    async def _tool_git_branch(self, step: PlanStep) -> bool:
+        path = step.action_args.get("path", ".")
+        branch = step.action_args.get("branch", "")
+        list_only = step.action_args.get("list_only", True)
+        result = await self.tools.execute("git_branch", path=path, branch=branch, list_only=list_only)
+        return result.success
+
+    async def _tool_git_log(self, step: PlanStep) -> bool:
+        path = step.action_args.get("path", ".")
+        limit = step.action_args.get("limit", 10)
+        result = await self.tools.execute("git_log", path=path, limit=limit)
+        return result.success
+
+    async def _tool_analyze_project(self, step: PlanStep) -> bool:
+        path = step.action_args.get("path", ".")
+        result = await self.tools.execute("analyze_project", path=path or self.config.workspace)
+        return result.success
+
+    async def _tool_analyze_code(self, step: PlanStep) -> bool:
+        path = step.action_args.get("path", "")
+        result = await self.tools.execute("analyze_code", path=path)
+        return result.success
+
+    async def _tool_web_search(self, step: PlanStep) -> bool:
+        query = step.action_args.get("query", "")
+        max_results = step.action_args.get("max_results", 5)
+        result = await self.tools.execute("web_search", query=query, max_results=max_results)
+        return result.success
+
+    async def _tool_web_fetch(self, step: PlanStep) -> bool:
+        url = step.action_args.get("url", "")
+        max_length = step.action_args.get("max_length", 5000)
+        result = await self.tools.execute("web_fetch", url=url, max_length=max_length)
         return result.success
 
     async def _test(self) -> bool:

@@ -903,6 +903,144 @@ class WebFetchTool(Tool):
             return ToolResult(success=False, error=f"Web fetch failed: {e}")
 
 
+class SelfAnalyzeTool(Tool):
+    name = "self_analyze"
+    description = "Analyze EVORA's own codebase for quality, test coverage, and potential improvements."
+    permission = PermissionLevel.SAFE
+    parameters = {
+        "workspace": {"type": "string", "description": "Path to analyze (defaults to workspace).", "required": False},
+        "check_tests": {"type": "boolean", "description": "Check test coverage and identify untested files.", "required": False},
+        "check_complexity": {"type": "boolean", "description": "Check code complexity and identify long functions.", "required": False},
+    }
+
+    async def execute(self, workspace: str = None, check_tests: bool = True, check_complexity: bool = True) -> ToolResult:
+        try:
+            full_path = self.security.check_workspace_path(workspace or self.security.workspace_dir)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        try:
+            import json as json_mod
+
+            result = {
+                "issues": [],
+                "metrics": {},
+                "recommendations": [],
+            }
+
+            # Check for test files
+            test_files = list(full_path.rglob("test_*.py")) + list(full_path.rglob("*_test.py"))
+            source_files = [f for f in full_path.rglob("*.py") if "test_" not in f.name and "_test.py" not in f.name]
+            result["metrics"]["test_files"] = len(test_files)
+            result["metrics"]["source_files"] = len(source_files)
+            result["metrics"]["test_coverage_ratio"] = len(test_files) / max(len(source_files), 1)
+
+            if check_tests:
+                source_stems = {f.stem for f in source_files}
+                test_stems = set()
+                for tf in test_files:
+                    if tf.stem.startswith("test_"):
+                        test_stems.add(tf.stem[5:])  # Remove 'test_' prefix
+                    else:
+                        test_stems.add(tf.stem.replace("_test", ""))
+
+                untested = []
+                for sf in source_files:
+                    stem = sf.stem
+                    if stem not in test_stems and not stem.startswith("_"):
+                        untested.append(str(sf.relative_to(full_path)))
+
+                if untested:
+                    result["issues"].append({
+                        "type": "untested_code",
+                        "severity": "medium",
+                        "detail": f"{len(untested)} source files have no corresponding test file",
+                        "files": untested[:20],
+                    })
+                    result["recommendations"].append(f"Write tests for: {', '.join(untested[:5])}")
+
+            if check_complexity:
+                long_functions = []
+                for sf in source_files:
+                    try:
+                        content = sf.read_text(encoding="utf-8", errors="ignore")
+                        lines = content.splitlines()
+                        for i, line in enumerate(lines):
+                            stripped = line.strip()
+                            if stripped.startswith("def ") or stripped.startswith("async def "):
+                                depth = 0
+                                def_lines = 0
+                                for j in range(i, min(i + 50, len(lines))):
+                                    def_lines += 1
+                                    indent_change = lines[j].count("    ") - (lines[j-1].count("    ") if j > 0 else 0)
+                                    depth += indent_change
+                                    if depth <= 0 and j > i:
+                                        break
+                                    if def_lines > 20:
+                                        long_functions.append({
+                                            "file": str(sf.relative_to(full_path)),
+                                            "line": i + 1,
+                                            "function": stripped.split("(")[0].replace("async ", "").replace("def ", ""),
+                                            "lines": def_lines,
+                                        })
+                                        break
+                    except Exception:
+                        continue
+
+                if long_functions:
+                    result["issues"].append({
+                        "type": "complexity",
+                        "severity": "low",
+                        "detail": f"{len(long_functions)} functions exceed 20 lines",
+                        "functions": long_functions[:10],
+                    })
+
+            # Check for TODO/FIXME/BUG comments
+            todos = []
+            for sf in source_files:
+                try:
+                    content = sf.read_text(encoding="utf-8", errors="ignore")
+                    for i, line in enumerate(content.splitlines(), 1):
+                        stripped = line.strip().upper()
+                        if "TODO" in stripped or "FIXME" in stripped or "BUG" in stripped:
+                            todos.append(f"{sf.relative_to(full_path)}:{i}: {line.strip()}")
+                except Exception:
+                    continue
+
+            if todos:
+                result["issues"].append({
+                    "type": "technical_debt",
+                    "severity": "low",
+                    "detail": f"{len(todos)} TODO/FIXME/BUG comments found",
+                    "items": todos[:20],
+                })
+
+            output_lines = [
+                "EVORA Self-Analysis Report",
+                "=" * 40,
+                f"Source files: {result['metrics']['source_files']}",
+                f"Test files: {result['metrics']['test_files']}",
+                f"Test coverage ratio: {result['metrics']['test_coverage_ratio']:.1%}",
+                "",
+                f"Issues found: {len(result['issues'])}",
+            ]
+            for issue in result["issues"]:
+                output_lines.append(f"  [{issue['severity'].upper()}] {issue['type']}: {issue['detail']}")
+            if result["recommendations"]:
+                output_lines.append("")
+                output_lines.append("Recommendations:")
+                for rec in result["recommendations"][:10]:
+                    output_lines.append(f"  - {rec}")
+
+            return ToolResult(
+                success=True,
+                output="\n".join(output_lines),
+                data=result,
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Self-analysis failed: {e}")
+
+
 class RunTestsTool(Tool):
     name = "run_tests"
     description = "Run tests for the project. Auto-detects test framework."
@@ -960,6 +1098,7 @@ class ToolRegistry:
         self.register(AnalyzeCodeTool(self.security, self.logger))
         self.register(WebSearchTool(self.security, self.logger))
         self.register(WebFetchTool(self.security, self.logger))
+        self.register(SelfAnalyzeTool(self.security, self.logger))
 
     def register(self, tool: Tool):
         self._tools[tool.name] = tool

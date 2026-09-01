@@ -170,9 +170,19 @@ class TestDecisionEngine:
         assert engine._action_type_to_tool("edit_file") == "edit_file"
         assert engine._action_type_to_tool("read_file") == "read_file"
         assert engine._action_type_to_tool("run_command") == "execute_command"
-        assert engine._action_type_to_tool("run_tests") == "execute_command"
+        assert engine._action_type_to_tool("run_tests") == "run_tests"
         assert engine._action_type_to_tool("analyze") == "list_directory"
         assert engine._action_type_to_tool("create_directory") == "create_directory"
+        assert engine._action_type_to_tool("git_status") == "git_status"
+        assert engine._action_type_to_tool("git_diff") == "git_diff"
+        assert engine._action_type_to_tool("git_commit") == "git_commit"
+        assert engine._action_type_to_tool("git_branch") == "git_branch"
+        assert engine._action_type_to_tool("git_log") == "git_log"
+        assert engine._action_type_to_tool("analyze_project") == "analyze_project"
+        assert engine._action_type_to_tool("analyze_code") == "analyze_code"
+        assert engine._action_type_to_tool("web_search") == "web_search"
+        assert engine._action_type_to_tool("web_fetch") == "web_fetch"
+        assert engine._action_type_to_tool("unknown_action") == "read_file"
 
     def test_decide_understand_sets_goal(self):
         engine = DecisionEngine()

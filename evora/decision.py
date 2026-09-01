@@ -134,10 +134,10 @@ class DecisionEngine:
 
         risk = "safe"
         requires_approval = False
-        if action_type == "run_command":
+        if action_type in ("run_command", "git_commit", "git_branch"):
             risk = "ask"
             requires_approval = not self.auto_approve
-        elif action_type in ("run_tests",):
+        elif action_type in ("run_tests", "web_search", "web_fetch"):
             risk = "ask"
             requires_approval = not self.auto_approve
 
@@ -234,9 +234,18 @@ class DecisionEngine:
             "edit_file": "edit_file",
             "read_file": "read_file",
             "run_command": "execute_command",
-            "run_tests": "execute_command",
+            "run_tests": "run_tests",
             "analyze": "list_directory",
             "create_directory": "create_directory",
+            "git_status": "git_status",
+            "git_diff": "git_diff",
+            "git_commit": "git_commit",
+            "git_branch": "git_branch",
+            "git_log": "git_log",
+            "analyze_project": "analyze_project",
+            "analyze_code": "analyze_code",
+            "web_search": "web_search",
+            "web_fetch": "web_fetch",
         }
         return mapping.get(action_type, "read_file")
 
