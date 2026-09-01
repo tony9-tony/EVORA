@@ -34,6 +34,12 @@ class Stage(str, Enum):
     ERROR = "ERROR"
     INFO = "INFO"
     WARN = "WARN"
+    UNDERSTAND = "UNDERSTAND"
+    ANALYZE = "ANALYZE"
+    DECIDE = "DECIDE"
+    OBSERVE = "OBSERVE"
+    EVALUATE = "EVALUATE"
+    REASON = "REASON"
 
 
 STAGE_COLORS = {
@@ -46,6 +52,12 @@ STAGE_COLORS = {
     Stage.ERROR: Fore.RED,
     Stage.INFO: Fore.WHITE,
     Stage.WARN: Fore.YELLOW,
+    Stage.UNDERSTAND: Fore.LIGHTMAGENTA_EX,
+    Stage.ANALYZE: Fore.LIGHTCYAN_EX,
+    Stage.DECIDE: Fore.LIGHTYELLOW_EX,
+    Stage.OBSERVE: Fore.LIGHTWHITE_EX,
+    Stage.EVALUATE: Fore.LIGHTGREEN_EX,
+    Stage.REASON: Fore.LIGHTRED_EX,
 }
 
 STAGE_EMOJIS = {
@@ -58,6 +70,12 @@ STAGE_EMOJIS = {
     Stage.ERROR: "[❌]",
     Stage.INFO: "[ℹ️]",
     Stage.WARN: "[⚠️]",
+    Stage.UNDERSTAND: "[🧠]",
+    Stage.ANALYZE: "[🔍]",
+    Stage.DECIDE: "[🤔]",
+    Stage.OBSERVE: "[👁️]",
+    Stage.EVALUATE: "[⚖️]",
+    Stage.REASON: "[💭]",
 }
 
 
@@ -122,6 +140,27 @@ class Logger:
 
     def debug(self, msg: str):
         self._logger.debug(msg)
+
+    def understand(self, msg: str):
+        self._log(Stage.UNDERSTAND, msg)
+
+    def analyze(self, msg: str):
+        self._log(Stage.ANALYZE, msg)
+
+    def decide(self, msg: str):
+        self._log(Stage.DECIDE, msg)
+
+    def observe(self, msg: str):
+        self._log(Stage.OBSERVE, msg)
+
+    def evaluate(self, msg: str):
+        self._log(Stage.EVALUATE, msg)
+
+    def reason(self, msg: str):
+        self._log(Stage.REASON, msg)
+
+    def verify(self, msg: str):
+        self._log(Stage.SUCCESS, msg)
 
     def get_logger(self) -> logging.Logger:
         return self._logger

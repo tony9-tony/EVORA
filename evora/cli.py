@@ -24,6 +24,7 @@ from evora.memory import Memory
 from evora.model import ModelManager, OpenAIProvider
 from evora.planner import Planner
 from evora.agent import Agent, AgentConfig
+from evora.autonomous import AutonomousAgent, AutonomousConfig
 from evora.security import PermissionManager
 from evora.tools import ToolRegistry
 
@@ -183,7 +184,7 @@ def cmd_memory(args):
 
 
 async def async_run(args):
-    """Run the EVORA agent on a task."""
+    """Run the EVORA autonomous agent on a task."""
     config = load_config()
     logger = Logger("evora", config.log_level, config.log_file)
     workspace = args.workspace or config.workspace_dir
@@ -212,23 +213,24 @@ async def async_run(args):
     planner = Planner(manager, logger)
     tools = ToolRegistry(security, logger)
 
-    agent_config = AgentConfig(
+    agent_config = AutonomousConfig(
         max_retries=getattr(args, 'max_retries', 3),
         retry_delay=1.0,
         command_timeout=getattr(args, 'timeout', 60),
         auto_approve=args.auto_approve,
+        max_iterations=50,
     )
 
-    agent = Agent(
+    agent = AutonomousAgent(
         model_manager=manager,
-        plan=planner,
+        planner=planner,
         approval=approval,
         tools=tools,
         memory=memory,
         security=security,
         logger=logger,
-        config=agent_config,
         analyzer=analyzer,
+        config=agent_config,
     )
 
     try:
