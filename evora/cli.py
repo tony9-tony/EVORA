@@ -19,16 +19,17 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
 from evora.analyzer import ProjectAnalyzer
 from evora.approval import ApprovalSystem
-from evora.config import load_config
+from evora.config import load_config, ProviderConfig
 from evora.identity import IdentityService, AuthorityLevel, Identity
 from evora.logger import Logger
 from evora.memory import Memory, MemoryService, LongTermMemoryEntry, MemoryFilter
-from evora.model import ModelManager, OpenAIProvider
+from evora.model import ModelManager, OpenAIProvider, AnthropicProvider, OllamaProvider, _has_openai, _has_anthropic, Message, Role, ChatRequest, ModelResponse
 from evora.planner import Planner
 from evora.agent import Agent, AgentConfig
 from evora.autonomous import AutonomousAgent, AutonomousConfig
@@ -36,22 +37,87 @@ from evora.security import PermissionManager
 from evora.tools import ToolRegistry
 
 
-def _build_model_manager(config, logger):
-    """Initialize model manager with available providers."""
-    manager = ModelManager(logger)
+def _build_model_manager(config, logger, provider_override=None):
+    """Initialize model manager with available providers.
 
-    openai_key = config.api_key or config.providers.get("openai", {}).api_key if config.providers else ""
-    if openai_key:
-        provider = OpenAIProvider(
-            api_key=openai_key,
-            model=config.model,
-            base_url=config.base_url,
+    Provider selection priority:
+      1. Explicitly requested provider (config.provider / EVORA_PROVIDER env / --provider flag)
+      2. openai   (requires API key)
+      3. ollama   (no API key required; local)
+      4. anthropic (requires API key)
+      5. mock     (fallback for offline/testing)
+    """
+    manager = ModelManager(logger)
+    providers = config.providers or {}
+    requested = (provider_override or config.provider or "").strip().lower()
+
+    # OpenAI (requires API key)
+    if _has_openai:
+        openai_pc = providers.get("openai")
+        openai_key = (
+            config.api_key
+            or (openai_pc.api_key if openai_pc else "")
+            or os.environ.get("EVORA_OPENAI_API_KEY", "")
         )
-        manager.register("openai", provider)
+        if openai_key:
+            try:
+                pc = openai_pc or ProviderConfig(name="openai", model="gpt-4o", base_url="https://api.openai.com/v1")
+                manager.register("openai", OpenAIProvider(
+                    api_key=openai_key,
+                    model=pc.model or "gpt-4o",
+                    base_url=pc.base_url or "https://api.openai.com/v1",
+                    timeout=pc.timeout,
+                ))
+            except ImportError as e:
+                logger.warn(f"OpenAI provider unavailable: {e}")
+
+    # Ollama (no API key required; local provider)
+    ollama_pc = providers.get("ollama")
+    ollama_model = (ollama_pc.model if ollama_pc else None) or OllamaProvider.DEFAULT_MODEL
+    ollama_url = (ollama_pc.base_url if ollama_pc else None) or OllamaProvider.DEFAULT_BASE_URL
+    ollama_timeout = (ollama_pc.timeout if ollama_pc else OllamaProvider.DEFAULT_TIMEOUT)
+    try:
+        manager.register("ollama", OllamaProvider(
+            model=ollama_model,
+            base_url=ollama_url,
+            timeout=ollama_timeout,
+        ))
+    except ImportError as e:
+        logger.warn(f"Ollama provider unavailable: {e}")
+
+    # Anthropic (requires API key)
+    if _has_anthropic:
+        anthropic_pc = providers.get("anthropic")
+        anthropic_key = (anthropic_pc.api_key if anthropic_pc else "") or os.environ.get("EVORA_ANTHROPIC_API_KEY", "")
+        if anthropic_key:
+            try:
+                pc = anthropic_pc or ProviderConfig(name="anthropic", model="claude-3-5-sonnet-20241022", base_url="https://api.anthropic.com")
+                manager.register("anthropic", AnthropicProvider(
+                    api_key=anthropic_key,
+                    model=pc.model or "claude-3-5-sonnet-20241022",
+                    base_url=pc.base_url or "https://api.anthropic.com",
+                    timeout=pc.timeout,
+                ))
+            except ImportError as e:
+                logger.warn(f"Anthropic provider unavailable: {e}")
+
+    # Select active provider
+    available = manager.list_providers()
+    if requested and requested in available:
+        manager.set_active(requested)
+    elif "openai" in available:
+        manager.set_active("openai")
+    elif "ollama" in available:
+        manager.set_active("ollama")
+    elif "anthropic" in available:
+        manager.set_active("anthropic")
     else:
-        logger.warn("No API key found. Using mock model provider.")
+        logger.warn("No API key found and no local provider available. Using mock model provider.")
         manager.register("mock", MockModelProvider())
 
+    active = manager.active
+    if active:
+        logger.info(f"Active model provider: {active.name()} ({active.model()})")
     return manager
 
 
@@ -419,7 +485,7 @@ async def async_run(args):
         ask_approvals=not args.auto_approve,
     )
 
-    manager = _build_model_manager(config, logger)
+    manager = _build_model_manager(config, logger, provider_override=getattr(args, "provider", None))
     memory = Memory(config.memory_dir, project_name=Path(workspace).name)
     analyzer = ProjectAnalyzer(workspace, logger)
 
@@ -483,7 +549,7 @@ async def async_plan(args):
     logger = Logger("evora", config.log_level, config.log_file)
     workspace = args.workspace or config.workspace_dir
 
-    manager = _build_model_manager(config, logger)
+    manager = _build_model_manager(config, logger, provider_override=getattr(args, "provider", None))
     planner = Planner(manager, logger)
     analyzer = ProjectAnalyzer(workspace, logger)
 
@@ -492,6 +558,43 @@ async def async_plan(args):
 
     print(planner.format_plan(plan))
     manager.close()
+
+
+async def _chat_turn(manager, messages, user_input, memory_service, workspace_name, logger):
+    """Process one chat turn: append user message, retrieve memory context, call model, append response."""
+    messages.append(Message(role=Role.USER, content=user_input))
+    request_messages = list(messages)
+
+    context = ""
+    try:
+        if memory_service is not None:
+            relevant = memory_service.retrieve_relevant(
+                goal=user_input,
+                project=workspace_name,
+                limit=5,
+            )
+            if relevant:
+                context = "\n".join([f"- {r.entry.content[:200]}" for r in relevant[:5]])
+    except Exception as e:
+        logger.debug(f"Memory retrieval skipped: {e}")
+
+    if context:
+        request_messages.insert(-1, Message(role=Role.SYSTEM, content=f"Relevant memories:\n{context}"))
+
+    request = ChatRequest(messages=request_messages, max_tokens=4096, temperature=0.7)
+    response = await manager.chat(request)
+    messages.append(Message(role=Role.ASSISTANT, content=response.content))
+    return response
+
+
+def async_chat(args):
+    """Launch the EVORA chat web UI."""
+    from evora.chat_server import start_chat_server
+    config = load_config()
+    logger = Logger("evora", config.log_level, config.log_file)
+    provider_override = getattr(args, "provider", None)
+    start_chat_server(config=config, logger=logger, provider_override=provider_override)
+    return 0
 
 
 def main():
@@ -517,10 +620,16 @@ Examples:
     run_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
     run_parser.add_argument("--timeout", type=int, default=60, help="Command timeout in seconds")
     run_parser.add_argument("--max-retries", type=int, default=3, help="Max retry attempts")
+    run_parser.add_argument("--provider", type=str, default=None, help="Model provider (openai, ollama, anthropic)")
+
+    chat_parser = subparsers.add_parser("chat", help="Interactive chat with EVORA")
+    chat_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
+    chat_parser.add_argument("--provider", type=str, default=None, help="Model provider (openai, ollama, anthropic)")
 
     plan_parser = subparsers.add_parser("plan", help="Generate a plan without executing")
     plan_parser.add_argument("request", type=str, help="The task description")
     plan_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
+    plan_parser.add_argument("--provider", type=str, default=None, help="Model provider (openai, ollama, anthropic)")
 
     analyze_parser = subparsers.add_parser("analyze", help="Analyze the current project")
     analyze_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
@@ -602,6 +711,9 @@ Examples:
         cmd_identity(args)
     elif args.command == "plan":
         asyncio.run(async_plan(args))
+    elif args.command == "chat":
+        exit_code = async_chat(args)
+        sys.exit(exit_code)
     elif args.command == "run":
         exit_code = asyncio.run(async_run(args))
         sys.exit(exit_code)

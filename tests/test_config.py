@@ -39,3 +39,36 @@ class TestConfig:
         pc = ProviderConfig(name="openai", model="gpt-4o")
         assert pc.name == "openai"
         assert pc.model == "gpt-4o"
+
+    def test_provider_field_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = load_config()
+        assert config.provider == ""
+
+    def test_provider_field_env_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("EVORA_PROVIDER", "ollama")
+        config = load_config()
+        assert config.provider == "ollama"
+
+    def test_ollama_provider_config_present(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = load_config()
+        assert "ollama" in config.providers
+        ollama = config.providers["ollama"]
+        assert ollama.model == "qwen2.5-coder:latest"
+        assert "127.0.0.1:11434" in ollama.base_url
+
+    def test_ollama_provider_env_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("EVORA_OLLAMA_MODEL", "custom-model")
+        monkeypatch.setenv("EVORA_OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        config = load_config()
+        assert config.providers["ollama"].model == "custom-model"
+        assert config.providers["ollama"].base_url == "http://localhost:11434/v1"
+
+    def test_default_config_includes_ollama(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        config = load_config()
+        # Auto-select should prefer ollama when no openai key
+        assert "ollama" in config.providers

@@ -34,6 +34,7 @@ class PermissionConfig:
 @dataclass
 class Config:
     api_key: str = ""
+    provider: str = ""
     model: str = "gpt-4o"
     base_url: str = "https://api.openai.com/v1"
     workspace_dir: str = "."
@@ -55,6 +56,7 @@ def _get_evora_dir() -> Path:
 
 def _default_config() -> str:
     return """# EVORA Configuration
+provider: ""
 model: "gpt-4o"
 base_url: "https://api.openai.com/v1"
 log_level: "INFO"
@@ -68,6 +70,10 @@ providers:
   anthropic:
     model: "claude-3-5-sonnet-20241022"
     base_url: "https://api.anthropic.com"
+  ollama:
+    model: "qwen2.5-coder:latest"
+    base_url: "http://127.0.0.1:11434/v1"
+    timeout: 180.0
 
 permissions:
   allow_file_write: true
@@ -107,6 +113,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     env_overrides = {
         "api_key": os.environ.get("EVORA_API_KEY", ""),
+        "provider": os.environ.get("EVORA_PROVIDER", ""),
         "model": os.environ.get("EVORA_MODEL", ""),
         "base_url": os.environ.get("EVORA_BASE_URL", ""),
         "workspace_dir": os.environ.get("EVORA_WORKSPACE_DIR", ""),
@@ -126,7 +133,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
             model=pdata.get("model", "gpt-4o"),
             api_key=os.environ.get(f"EVORA_{name.upper()}_API_KEY", pdata.get("api_key", "")),
             base_url=pdata.get("base_url", ""),
-            timeout=pdata.get("timeout", 30.0),
+            timeout=float(os.environ.get(f"EVORA_{name.upper()}_TIMEOUT", pdata.get("timeout", 30.0))),
         )
     if "openai" not in providers:
         providers["openai"] = ProviderConfig(
@@ -135,6 +142,14 @@ def load_config(config_path: Optional[str] = None) -> Config:
             api_key=os.environ.get("EVORA_API_KEY", ""),
             base_url=os.environ.get("EVORA_BASE_URL", "https://api.openai.com/v1"),
             timeout=30.0,
+        )
+    if "ollama" not in providers:
+        providers["ollama"] = ProviderConfig(
+            name="ollama",
+            model=os.environ.get("EVORA_OLLAMA_MODEL", "qwen2.5-coder:latest"),
+            api_key=os.environ.get("EVORA_OLLAMA_API_KEY", ""),
+            base_url=os.environ.get("EVORA_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
+            timeout=float(os.environ.get("EVORA_OLLAMA_TIMEOUT", "180.0")),
         )
 
     perms_data = config_data.get("permissions", {})
@@ -170,6 +185,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     return Config(
         api_key=config_data.get("api_key", os.environ.get("EVORA_API_KEY", "")),
+        provider=config_data.get("provider", os.environ.get("EVORA_PROVIDER", "")),
         model=config_data.get("model", os.environ.get("EVORA_MODEL", "gpt-4o")),
         base_url=config_data.get("base_url", os.environ.get("EVORA_BASE_URL", "https://api.anthropic.com")),
         workspace_dir=workspace,

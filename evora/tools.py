@@ -14,6 +14,15 @@ Tools:
     search_content  - Search file contents with regex
     execute_command - Run a command (permission-checked)
     run_tests       - Run test suite
+    git_status      - Check git status
+    git_diff        - View uncommitted changes
+    git_commit      - Commit changes
+    git_branch      - Manage branches
+    git_log         - View commit history
+    analyze_project - Analyze project structure and detect frameworks
+    analyze_code    - Analyze a source file for structure and quality
+    web_search      - Search the web for information
+    web_fetch       - Fetch content from a URL
 """
 
 from __future__ import annotations
@@ -449,6 +458,451 @@ class ExecuteCommandTool(Tool):
             return ToolResult(success=False, error=f"Command execution failed: {e}")
 
 
+class GitStatusTool(Tool):
+    name = "git_status"
+    description = "Show the working tree status of a Git repository."
+    permission = PermissionLevel.SAFE
+    parameters = {
+        "path": {"type": "string", "description": "Path to the git repository.", "required": False},
+    }
+
+    async def execute(self, path: str = ".") -> ToolResult:
+        try:
+            full_path = self.security.check_workspace_path(path)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(full_path), "status"],
+                capture_output=True, text=True, timeout=30,
+            )
+            return ToolResult(
+                success=result.returncode == 0,
+                output=result.stdout,
+                error=result.stderr if result.returncode != 0 else "",
+                data={"path": str(full_path), "returncode": result.returncode},
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Git status failed: {e}")
+
+
+class GitDiffTool(Tool):
+    name = "git_diff"
+    description = "Show uncommitted changes in a Git repository."
+    permission = PermissionLevel.SAFE
+    parameters = {
+        "path": {"type": "string", "description": "Path to the git repository.", "required": False},
+        "staged": {"type": "boolean", "description": "Show staged changes only.", "required": False},
+        "file": {"type": "string", "description": "Show diff for a specific file.", "required": False},
+    }
+
+    async def execute(self, path: str = ".", staged: bool = False, file: str = None) -> ToolResult:
+        try:
+            full_path = self.security.check_workspace_path(path)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        try:
+            cmd = ["git", "-C", str(full_path), "diff"]
+            if staged:
+                cmd.append("--staged")
+            if file:
+                cmd.append("--")
+                cmd.append(file)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            return ToolResult(
+                success=result.returncode == 0,
+                output=result.stdout,
+                error=result.stderr if result.returncode != 0 else "",
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Git diff failed: {e}")
+
+
+class GitCommitTool(Tool):
+    name = "git_commit"
+    description = "Commit staged changes in a Git repository (requires approval)."
+    permission = PermissionLevel.ASK
+    parameters = {
+        "path": {"type": "string", "description": "Path to the git repository.", "required": False},
+        "message": {"type": "string", "description": "Commit message.", "required": True},
+    }
+
+    async def execute(self, path: str = ".", message: str = "") -> ToolResult:
+        if not message:
+            return ToolResult(success=False, error="Commit message is required")
+
+        approved = self.security.request_approval(
+            f"git commit -m '{message}'", PermissionLevel.ASK,
+            "Committing changes to git"
+        )
+        if not approved:
+            return ToolResult(success=False, error="Commit not approved")
+
+        try:
+            full_path = self.security.check_workspace_path(path)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(full_path), "commit", "-m", message],
+                capture_output=True, text=True, timeout=30,
+            )
+            return ToolResult(
+                success=result.returncode == 0,
+                output=result.stdout,
+                error=result.stderr if result.returncode != 0 else "",
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Git commit failed: {e}")
+
+
+class GitBranchTool(Tool):
+    name = "git_branch"
+    description = "List, create, or switch branches in a Git repository (requires approval for modifications)."
+    permission = PermissionLevel.ASK
+    parameters = {
+        "path": {"type": "string", "description": "Path to the git repository.", "required": False},
+        "branch": {"type": "string", "description": "Branch name to create/switch to.", "required": False},
+        "list_only": {"type": "boolean", "description": "Only list branches, do not create.", "required": False},
+    }
+
+    async def execute(self, path: str = ".", branch: str = None, list_only: bool = True) -> ToolResult:
+        try:
+            full_path = self.security.check_workspace_path(path)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        try:
+            if list_only or not branch:
+                result = subprocess.run(
+                    ["git", "-C", str(full_path), "branch", "--show-current"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                return ToolResult(
+                    success=result.returncode == 0,
+                    output=result.stdout.strip(),
+                    error=result.stderr if result.returncode != 0 else "",
+                )
+
+            approved = self.security.request_approval(
+                f"git checkout -b {branch}", PermissionLevel.ASK,
+                f"Creating/switching to branch '{branch}'"
+            )
+            if not approved:
+                return ToolResult(success=False, error="Branch operation not approved")
+
+            result = subprocess.run(
+                ["git", "-C", str(full_path), "checkout", "-b", branch],
+                capture_output=True, text=True, timeout=30,
+            )
+            return ToolResult(
+                success=result.returncode == 0,
+                output=result.stdout,
+                error=result.stderr if result.returncode != 0 else "",
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Git branch failed: {e}")
+
+
+class GitLogTool(Tool):
+    name = "git_log"
+    description = "Show commit history of a Git repository."
+    permission = PermissionLevel.SAFE
+    parameters = {
+        "path": {"type": "string", "description": "Path to the git repository.", "required": False},
+        "limit": {"type": "integer", "description": "Number of commits to show.", "required": False},
+    }
+
+    async def execute(self, path: str = ".", limit: int = 10) -> ToolResult:
+        try:
+            full_path = self.security.check_workspace_path(path)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        try:
+            cmd = ["git", "-C", str(full_path), "log", f"-{limit}", "--oneline", "--decorate"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            return ToolResult(
+                success=result.returncode == 0,
+                output=result.stdout,
+                error=result.stderr if result.returncode != 0 else "",
+                data={"commits": result.stdout.strip().split("\n") if result.stdout.strip() else []},
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Git log failed: {e}")
+
+
+class AnalyzeProjectTool(Tool):
+    name = "analyze_project"
+    description = "Analyze the project structure, detect languages, frameworks, and test commands."
+    permission = PermissionLevel.SAFE
+    parameters = {
+        "path": {"type": "string", "description": "Path to the project root.", "required": False},
+    }
+
+    async def execute(self, path: str = None) -> ToolResult:
+        import json as json_mod
+        search_path = path or self.security.workspace_dir
+        try:
+            full_path = self.security.check_workspace_path(search_path)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        try:
+            result = {}
+            result["files"] = []
+            result["languages"] = {}
+            result["frameworks"] = []
+            result["build_system"] = None
+            result["test_command"] = None
+            result["has_git"] = (full_path / ".git").exists()
+
+            lang_extensions = {
+                ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript",
+                ".jsx": "JavaScript", ".tsx": "TypeScript", ".go": "Go",
+                ".rs": "Rust", ".java": "Java", ".c": "C", ".cpp": "C++",
+                ".cs": "C#", ".rb": "Ruby", ".php": "PHP", ".sh": "Shell",
+                ".html": "HTML", ".css": "CSS", ".scss": "SCSS", ".json": "JSON",
+                ".yaml": "YAML", ".yml": "YAML", ".toml": "TOML", ".xml": "XML",
+                ".md": "Markdown", ".sql": "SQL", ".kt": "Kotlin", ".swift": "Swift",
+            }
+
+            build_files = {
+                "pyproject.toml": "Python (poetry/pip)",
+                "setup.py": "Python (setuptools)",
+                "setup.cfg": "Python (setuptools)",
+                "go.mod": "Go",
+                "Cargo.toml": "Rust",
+                "pom.xml": "Java (Maven)",
+                "build.gradle": "Java (Gradle)",
+                "package.json": "Node.js",
+                "CMakeLists.txt": "C/C++ (CMake)",
+                "Makefile": "Make",
+            }
+
+            frameworks = {
+                "fastapi": "FastAPI", "flask": "Flask", "django": "Django",
+                "react": "React", "vue": "Vue", "angular": "Angular",
+                "next.config.js": "Next.js", "gatsby": "Gatsby",
+                "pytest.ini": "pytest", "tox.ini": "tox",
+            }
+
+            test_commands = {
+                "pytest.ini": "pytest", "pyproject.toml": "pytest",
+                "go.mod": "go test ./...", "Cargo.toml": "cargo test",
+                "pom.xml": "mvn test", "build.gradle": "gradle test",
+                "package.json": "npm test",
+            }
+
+            for entry in full_path.iterdir():
+                if entry.is_file():
+                    result["files"].append(entry.name)
+                    ext = entry.suffix.lower()
+                    if ext in lang_extensions:
+                        lang = lang_extensions[ext]
+                        result["languages"][lang] = result["languages"].get(lang, 0) + 1
+                    if entry.name in build_files:
+                        result["build_system"] = build_files[entry.name]
+                    if entry.name in frameworks:
+                        result["frameworks"].append(frameworks[entry.name])
+                    if entry.name in test_commands:
+                        result["test_command"] = test_commands[entry.name]
+
+            result["file_count"] = len(result["files"])
+            return ToolResult(
+                success=True,
+                output=json_mod.dumps(result, indent=2),
+                data=result,
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Project analysis failed: {e}")
+
+
+class AnalyzeCodeTool(Tool):
+    name = "analyze_code"
+    description = "Analyze a source file for structure: functions, classes, imports, complexity."
+    permission = PermissionLevel.SAFE
+    parameters = {
+        "path": {"type": "string", "description": "Path to the source file.", "required": True},
+    }
+
+    async def execute(self, path: str) -> ToolResult:
+        try:
+            full_path = self.security.check_workspace_path(path)
+        except PermissionError as e:
+            return ToolResult(success=False, error=str(e))
+
+        if not full_path.exists():
+            return ToolResult(success=False, error=f"File not found: {path}")
+        if not full_path.is_file():
+            return ToolResult(success=False, error=f"Not a file: {path}")
+
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="ignore")
+            lines = content.splitlines()
+            ext = full_path.suffix.lower()
+
+            result = {
+                "path": str(full_path),
+                "language": lang_extensions.get(ext, "Unknown") if (lang_extensions := {
+                    ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript",
+                    ".go": "Go", ".rs": "Rust", ".java": "Java", ".c": "C",
+                    ".cpp": "C++", ".cs": "C#", ".rb": "Ruby", ".php": "PHP",
+                }) else "Unknown",
+                "lines": len(lines),
+                "classes": [],
+                "functions": [],
+                "imports": [],
+            }
+
+            indent_chars = set()
+            for line in lines:
+                stripped = line.lstrip()
+                if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+                    continue
+                indent_chars.add(line[:len(line) - len(stripped)])
+
+            for line in lines:
+                stripped = line.strip()
+                if ext == ".py":
+                    if re.match(r"^(class|def)\s+\w+", stripped):
+                        parts = stripped.split("(")
+                        name = parts[0].replace("class ", "").replace("def ", "").strip()
+                        if stripped.startswith("class"):
+                            result["classes"].append(name)
+                        else:
+                            result["functions"].append(name)
+                        if stripped.startswith("import ") or stripped.startswith("from "):
+                            result["imports"].append(stripped)
+                elif ext in (".js", ".ts", ".jsx", ".tsx"):
+                    if "function " in stripped and "(" in stripped:
+                        result["functions"].append(stripped)
+                    elif stripped.startswith("class "):
+                        result["classes"].append(stripped)
+                    elif stripped.startswith("import ") or stripped.startswith("const ") and "require" in stripped:
+                        result["imports"].append(stripped)
+
+            result["uses_tabs"] = "\t" in "".join(indent_chars)
+            result["uses_spaces"] = " " in "".join(indent_chars)
+
+            output_lines = [
+                f"File: {path}",
+                f"Language: {result['language']}",
+                f"Lines: {result['lines']}",
+                f"Classes: {len(result['classes'])}",
+                f"Functions: {len(result['functions'])}",
+                f"Imports: {len(result['imports'])}",
+            ]
+            if result["classes"]:
+                output_lines.append(f"  Classes: {', '.join(result['classes'][:10])}")
+            if result["functions"]:
+                output_lines.append(f"  Functions: {', '.join(result['functions'][:10])}")
+            if result["imports"]:
+                output_lines.append(f"  Imports: {', '.join(result['imports'][:10])}")
+
+            return ToolResult(
+                success=True,
+                output="\n".join(output_lines),
+                data=result,
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Code analysis failed: {e}")
+
+
+class WebSearchTool(Tool):
+    name = "web_search"
+    description = "Search the web for information. Uses DuckDuckGo (no API key required)."
+    permission = PermissionLevel.ASK
+    parameters = {
+        "query": {"type": "string", "description": "Search query.", "required": True},
+        "max_results": {"type": "integer", "description": "Maximum number of results.", "required": False},
+    }
+
+    async def execute(self, query: str, max_results: int = 5) -> ToolResult:
+        approved = self.security.request_approval(
+            f"web_search: {query[:50]}", PermissionLevel.ASK,
+            "Searching the web for information"
+        )
+        if not approved:
+            return ToolResult(success=False, error="Web search not approved")
+
+        try:
+            import httpx as _httpx
+            url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
+            async with _httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers={"User-Agent": "EVORA/1.0"})
+                html = resp.text
+
+            results = []
+            for match in re.finditer(
+                r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', html, re.DOTALL
+            ):
+                href = match.group(1)
+                title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
+                results.append({"title": title, "url": href})
+                if len(results) >= max_results:
+                    break
+
+            if not results:
+                return ToolResult(success=False, error="No results found or web search unavailable")
+
+            output = "\n".join(f"- {r['title']}: {r['url']}" for r in results)
+            return ToolResult(
+                success=True,
+                output=output,
+                data={"query": query, "results": results},
+            )
+        except ImportError:
+            return ToolResult(success=False, error="httpx package not installed for web search")
+        except Exception as e:
+            return ToolResult(success=False, error=f"Web search failed: {e}")
+
+
+class WebFetchTool(Tool):
+    name = "web_fetch"
+    description = "Fetch and extract text content from a URL."
+    permission = PermissionLevel.ASK
+    parameters = {
+        "url": {"type": "string", "description": "URL to fetch.", "required": True},
+        "max_length": {"type": "integer", "description": "Maximum characters to return.", "required": False},
+    }
+
+    async def execute(self, url: str, max_length: int = 5000) -> ToolResult:
+        approved = self.security.request_approval(
+            f"web_fetch: {url[:80]}", PermissionLevel.ASK,
+            "Fetching web content"
+        )
+        if not approved:
+            return ToolResult(success=False, error="Web fetch not approved")
+
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"User-Agent": "EVORA/1.0"})
+                html = resp.text
+
+            text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
+            text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+            text = re.sub(r'<[^>]+>', ' ', text)
+            text = re.sub(r'\s+', ' ', text).strip()
+
+            if len(text) > max_length:
+                text = text[:max_length] + "..."
+
+            return ToolResult(
+                success=True,
+                output=text,
+                data={"url": url, "length": len(text)},
+            )
+        except ImportError:
+            return ToolResult(success=False, error="httpx package not installed for web fetch")
+        except Exception as e:
+            return ToolResult(success=False, error=f"Web fetch failed: {e}")
+
+
 class RunTestsTool(Tool):
     name = "run_tests"
     description = "Run tests for the project. Auto-detects test framework."
@@ -474,7 +928,8 @@ class RunTestsTool(Tool):
             else:
                 return ToolResult(success=False, error="No test framework detected")
 
-        return await self.execute_command(command=cmd)
+        exec_tool = ExecuteCommandTool(self.security, self.logger)
+        return await exec_tool.execute(command=cmd)
 
 
 class ToolRegistry:
@@ -496,6 +951,15 @@ class ToolRegistry:
         self.register(SearchContentTool(self.security, self.logger))
         self.register(ExecuteCommandTool(self.security, self.logger))
         self.register(RunTestsTool(self.security, self.logger))
+        self.register(GitStatusTool(self.security, self.logger))
+        self.register(GitDiffTool(self.security, self.logger))
+        self.register(GitCommitTool(self.security, self.logger))
+        self.register(GitBranchTool(self.security, self.logger))
+        self.register(GitLogTool(self.security, self.logger))
+        self.register(AnalyzeProjectTool(self.security, self.logger))
+        self.register(AnalyzeCodeTool(self.security, self.logger))
+        self.register(WebSearchTool(self.security, self.logger))
+        self.register(WebFetchTool(self.security, self.logger))
 
     def register(self, tool: Tool):
         self._tools[tool.name] = tool

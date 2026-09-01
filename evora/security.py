@@ -93,42 +93,6 @@ class PermissionManager:
         resolved = Path(path).resolve()
         try:
             resolved.relative_to(self.workspace_dir)
-        except ValueError:
-            pass
-
-        try:
-            resolved.relative_to(self.workspace_dir)
-            return resolved
-        except ValueError:
-            try:
-                self.workspace_dir.relative_to(resolved)
-                return resolved
-            except ValueError:
-                pass
-            pass
-        try:
-            resolved.relative_to(self.workspace_dir)
-            return resolved
-        except ValueError:
-            pass
-
-        try:
-            resolved.relative_to(self.workspace_dir)
-            return resolved
-        except ValueError:
-            try:
-                self.workspace_dir.relative_to(resolved)
-                return resolved
-            except ValueError:
-                pass
-        try:
-            resolved.relative_to(self.workspace_dir)
-            return resolved
-        except ValueError:
-            pass
-
-        try:
-            resolved.relative_to(self.workspace_dir)
             return resolved
         except ValueError:
             try:
