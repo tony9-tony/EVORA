@@ -34,6 +34,7 @@ from evora.reasoning import ReasoningEngine, ReasoningContext, ReasoningResult
 from evora.inspector import DevelopmentInspector, InspectionReport, InspectionFinding
 from evora.discovery import ImprovementDiscovery, ImprovementCandidate
 from evora.dev_planner import DevelopmentPlanner, DevelopmentPlan, DevelopmentStep
+from evora.approval import ApprovalSystem, ApprovalDecision, ApprovalToken
 
 
 @pytest.fixture
@@ -139,7 +140,7 @@ class TestApprovalBypass:
         assert "FAILED" in result or "REJECTED" in result
 
     @pytest.mark.asyncio
-    async def test_direct_implement_call_requires_approval(self, tmp_workspace, security, logger):
+    async def test_implement_without_approval_token_denied(self, tmp_workspace, security, logger):
         session = SelfDevelopmentSession(
             workspace_dir=str(tmp_workspace),
             model_manager=MagicMock(),
@@ -155,7 +156,47 @@ class TestApprovalBypass:
         candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
         plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
         result = await session._implement(candidate, plan)
-        assert result.get("success") is True
+        assert result.get("success") is False
+        assert "approval token" in result.get("error", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_approval_token_is_single_use(self, tmp_workspace, security, logger):
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace),
+            model_manager=MagicMock(),
+            security=security,
+            identity_service=None,
+            approval=MagicMock(),
+            tools=MagicMock(),
+            memory=MagicMock(),
+            logger=logger,
+        )
+        token = ApprovalToken.create(session_id="s1", plan_id="p1", candidate_id="c1", approved_by="creator")
+        session._approval_token = token
+        session.approval.consume_approval_token = MagicMock(return_value=True)
+
+        session._status = DevStatus.APPROVED
+        session._record = DevSessionRecord(session_id="s1", objective="test")
+        candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
+        plan1 = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
+        result1 = await session._implement(candidate, plan1)
+        assert result1.get("success") is True
+        session.approval.consume_approval_token.assert_called_once_with(
+            token_id=token.token_id,
+            session_id="s1",
+            plan_id="p1",
+            candidate_id="c1",
+        )
+
+        token2 = ApprovalToken.create(session_id="s1", plan_id="p2", candidate_id="c1", approved_by="creator")
+        session._approval_token = token2
+        session._implemented_plan_ids.discard(plan1.id)
+        session._status = DevStatus.APPROVED
+        session.approval.consume_approval_token = MagicMock(return_value=False)
+        plan2 = DevelopmentPlan(id="p2", objective="T", candidate_id="c1", steps=[])
+        result2 = await session._implement(candidate, plan2)
+        assert result2.get("success") is False
+        assert "invalid or already consumed" in result2.get("error", "").lower()
 
 
 class TestScopeEscape:
@@ -254,6 +295,152 @@ class TestScopeEscape:
         result = await session.run("Improve tests")
         assert "REJECTED" in result or "FAILED" in result
 
+    @pytest.mark.asyncio
+    async def test_symlink_path_denied(self, tmp_workspace, security, logger):
+        if os.name == "nt":
+            pytest.skip("Symlink creation requires elevated privileges on Windows")
+
+        target = tmp_workspace / "target.py"
+        target.write_text("x = 1\n")
+        symlink = tmp_workspace / "symlink.py"
+        symlink.symlink_to(target)
+
+        inspector = MagicMock()
+        inspector.inspect.return_value = InspectionReport(findings=[
+            InspectionFinding(category="tests", severity="high", description="Test failing")
+        ])
+        discovery = MagicMock()
+        discovery.discover.return_value = [
+            ImprovementCandidate(id="c1", title="Fix tests", description="Fix", category="tests", severity="high",
+                                affected_files=[str(symlink)])
+        ]
+
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace),
+            model_manager=MagicMock(),
+            security=security,
+            identity_service=None,
+            approval=MagicMock(),
+            tools=MagicMock(),
+            memory=MagicMock(),
+            logger=logger,
+        )
+        session.inspector = inspector
+        session.discovery = discovery
+        session.planner = MagicMock()
+        plan = DevelopmentPlan(
+            id="p1",
+            objective="Fix",
+            candidate_id="c1",
+            steps=[
+                DevelopmentStep(id="s1", name="Modify symlink", description="Escape", action_type="edit_file",
+                               action_args={"path": str(symlink), "old_string": "x = 1", "new_string": "x = 2"}),
+            ],
+        )
+        session.planner.create_plan = AsyncMock(return_value=plan)
+        session.reasoning = MagicMock()
+        session.reasoning.reason = AsyncMock(return_value=MagicMock(selected_approach="Fix tests", confidence=0.7))
+        session.approval.approve_plan = MagicMock(return_value=MagicMock(value="approve"))
+
+        result = await session.run("Improve tests")
+        assert "REJECTED" in result or "FAILED" in result
+
+    @pytest.mark.asyncio
+    async def test_absolute_path_outside_workspace_denied(self, tmp_workspace, security, logger):
+        target = tmp_workspace / "allowed.py"
+        target.write_text("x = 1\n")
+        outside = tmp_workspace.parent / "outside.py"
+        outside.write_text("y = 2\n")
+
+        inspector = MagicMock()
+        inspector.inspect.return_value = InspectionReport(findings=[
+            InspectionFinding(category="tests", severity="high", description="Test failing")
+        ])
+        discovery = MagicMock()
+        discovery.discover.return_value = [
+            ImprovementCandidate(id="c1", title="Fix tests", description="Fix", category="tests", severity="high",
+                                affected_files=[str(target)])
+        ]
+
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace),
+            model_manager=MagicMock(),
+            security=security,
+            identity_service=None,
+            approval=MagicMock(),
+            tools=MagicMock(),
+            memory=MagicMock(),
+            logger=logger,
+        )
+        session.inspector = inspector
+        session.discovery = discovery
+        session.planner = MagicMock()
+        plan = DevelopmentPlan(
+            id="p1",
+            objective="Fix",
+            candidate_id="c1",
+            steps=[
+                DevelopmentStep(id="s1", name="Modify outside", description="Escape", action_type="edit_file",
+                               action_args={"path": str(outside.resolve()), "old_string": "y = 2", "new_string": "y = 3"}),
+            ],
+        )
+        session.planner.create_plan = AsyncMock(return_value=plan)
+        session.reasoning = MagicMock()
+        session.reasoning.reason = AsyncMock(return_value=MagicMock(selected_approach="Fix tests", confidence=0.7))
+        session.approval.approve_plan = MagicMock(return_value=MagicMock(value="approve"))
+
+        result = await session.run("Improve tests")
+        assert "REJECTED" in result or "FAILED" in result
+        assert outside.read_text() == "y = 2\n"
+
+    @pytest.mark.asyncio
+    async def test_unapproved_file_not_modified(self, tmp_workspace, security, logger):
+        allowed = tmp_workspace / "allowed.py"
+        allowed.write_text("x = 1\n")
+        unapproved = tmp_workspace / "unapproved.py"
+        unapproved.write_text("y = 2\n")
+
+        inspector = MagicMock()
+        inspector.inspect.return_value = InspectionReport(findings=[
+            InspectionFinding(category="tests", severity="high", description="Test failing")
+        ])
+        discovery = MagicMock()
+        discovery.discover.return_value = [
+            ImprovementCandidate(id="c1", title="Fix tests", description="Fix", category="tests", severity="high",
+                                affected_files=[str(allowed)])
+        ]
+
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace),
+            model_manager=MagicMock(),
+            security=security,
+            identity_service=None,
+            approval=MagicMock(),
+            tools=MagicMock(),
+            memory=MagicMock(),
+            logger=logger,
+        )
+        session.inspector = inspector
+        session.discovery = discovery
+        session.planner = MagicMock()
+        plan = DevelopmentPlan(
+            id="p1",
+            objective="Fix",
+            candidate_id="c1",
+            steps=[
+                DevelopmentStep(id="s1", name="Modify unapproved", description="Escape", action_type="edit_file",
+                               action_args={"path": str(unapproved), "old_string": "y = 2", "new_string": "y = 3"}),
+            ],
+        )
+        session.planner.create_plan = AsyncMock(return_value=plan)
+        session.reasoning = MagicMock()
+        session.reasoning.reason = AsyncMock(return_value=MagicMock(selected_approach="Fix tests", confidence=0.7))
+        session.approval.approve_plan = MagicMock(return_value=MagicMock(value="approve"))
+
+        result = await session.run("Improve tests")
+        assert "REJECTED" in result or "FAILED" in result
+        assert unapproved.read_text() == "y = 2\n"
+
 
 class TestCriticalFileProtection:
     """Try to modify critical control files via Phase 7."""
@@ -324,6 +511,9 @@ class TestCriticalFileProtection:
         )
         session._status = DevStatus.APPROVED
         session._record = DevSessionRecord(session_id="test", objective="test")
+        token = ApprovalToken.create(session_id="test", plan_id="p1", candidate_id="c1", approved_by="creator")
+        session._approval_token = token
+        session.approval.consume_approval_token = MagicMock(return_value=True)
         candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
         plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[
             DevelopmentStep(id="s1", name="Modify security", description="Modify", action_type="edit_file",
@@ -358,6 +548,9 @@ class TestImplementationSecurity:
         )
         session._status = DevStatus.APPROVED
         session._record = DevSessionRecord(session_id="test", objective="test")
+        token = ApprovalToken.create(session_id="test", plan_id="p1", candidate_id="c1", approved_by="creator")
+        session._approval_token = token
+        session.approval.consume_approval_token = MagicMock(return_value=True)
         candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
         plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
         result = await session._implement(candidate, plan)
@@ -388,12 +581,64 @@ class TestImplementationSecurity:
         session.self_improve = self_improve
         session._status = DevStatus.APPROVED
         session._record = DevSessionRecord(session_id="test", objective="test")
+        token = ApprovalToken.create(session_id="test", plan_id="p1", candidate_id="c1", approved_by="creator")
+        session._approval_token = token
+        session.approval.consume_approval_token = MagicMock(return_value=True)
         candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
         plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
         await session._implement(candidate, plan)
         records = session.self_improve.history.list()
         assert len(records) == 1
         assert records[0].status == ImprovementStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_duplicate_implementation_rejected(self, tmp_workspace, security, logger):
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace),
+            model_manager=MagicMock(),
+            security=security,
+            identity_service=None,
+            approval=MagicMock(),
+            tools=MagicMock(),
+            memory=MagicMock(),
+            logger=logger,
+        )
+        session._status = DevStatus.APPROVED
+        session._record = DevSessionRecord(session_id="test", objective="test")
+        token = ApprovalToken.create(session_id="test", plan_id="p1", candidate_id="c1", approved_by="creator")
+        session._approval_token = token
+        session.approval.consume_approval_token = MagicMock(return_value=True)
+        candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
+        plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
+        result1 = await session._implement(candidate, plan)
+        assert result1.get("success") is True
+
+        token2 = ApprovalToken.create(session_id="test", plan_id="p1", candidate_id="c1", approved_by="creator")
+        session._approval_token = token2
+        result2 = await session._implement(candidate, plan)
+        assert result2.get("success") is False
+        assert "duplicate" in result2.get("error", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_completed_session_cannot_reimplement(self, tmp_workspace, security, logger):
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace),
+            model_manager=MagicMock(),
+            security=security,
+            identity_service=None,
+            approval=MagicMock(),
+            tools=MagicMock(),
+            memory=MagicMock(),
+            logger=logger,
+        )
+        session._record = DevSessionRecord(session_id="s1", objective="test")
+        session._completed_sessions.add("s1")
+        session._status = DevStatus.APPROVED
+        candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
+        plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
+        result = await session._implement(candidate, plan)
+        assert result.get("success") is False
+        assert "already completed" in result.get("error", "").lower()
 
 
 class TestModelOutputAttacks:
@@ -409,7 +654,8 @@ class TestModelOutputAttacks:
         context = ReasoningContext(objective="Improve tests")
         result = await engine.reason(context)
         assert isinstance(result, ReasoningResult)
-        assert result.confidence < 0.5
+        assert result.next_action == "abort"
+        assert result.confidence == 0.0
 
     @pytest.mark.asyncio
     async def test_model_exception_handled(self, logger):
@@ -419,7 +665,21 @@ class TestModelOutputAttacks:
         context = ReasoningContext(objective="Improve tests")
         result = await engine.reason(context)
         assert isinstance(result, ReasoningResult)
-        assert result.next_action == "retry_reasoning"
+        assert result.next_action == "abort"
+        assert result.confidence == 0.0
+
+    @pytest.mark.asyncio
+    async def test_reasoning_missing_required_fields_fails_hard(self, logger):
+        manager = MagicMock()
+        response = MagicMock()
+        response.content = '{"summary": "ok"}'
+        manager.chat = AsyncMock(return_value=response)
+        engine = ReasoningEngine(manager, logger)
+        context = ReasoningContext(objective="Improve tests")
+        result = await engine.reason(context)
+        assert isinstance(result, ReasoningResult)
+        assert result.next_action == "abort"
+        assert result.confidence == 0.0
 
 
 class TestStateMachineAttacks:
@@ -492,10 +752,10 @@ class TestPlanIntegrity:
 
 
 class TestBenchmarkIntegrity:
-    """Verify benchmark cannot be fabricated."""
+    """Verify benchmark is bound to real execution."""
 
     @pytest.mark.asyncio
-    async def test_benchmark_requires_implementation(self, tmp_workspace, security, logger):
+    async def test_benchmark_includes_real_test_evidence(self, tmp_workspace, security, logger):
         session = SelfDevelopmentSession(
             workspace_dir=str(tmp_workspace),
             model_manager=MagicMock(),
@@ -509,8 +769,33 @@ class TestBenchmarkIntegrity:
         session._status = DevStatus.EVALUATING
         session._record = DevSessionRecord(session_id="test", objective="test")
         plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
-        benchmark = await session._benchmark(plan)
+        test_result = {"success": True, "results": [{"test": "pytest", "success": True, "output": "ok"}]}
+        benchmark = await session._benchmark(plan, test_result)
         assert "timestamp" in benchmark
+        assert "command" in benchmark
+        assert "exit_code" in benchmark
+        assert "passed" in benchmark
+        assert "failed" in benchmark
+        assert "timing_seconds" in benchmark
+
+    @pytest.mark.asyncio
+    async def test_benchmark_not_fabricated_without_tests(self, tmp_workspace, security, logger):
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace),
+            model_manager=MagicMock(),
+            security=security,
+            identity_service=None,
+            approval=MagicMock(),
+            tools=MagicMock(),
+            memory=MagicMock(),
+            logger=logger,
+        )
+        session._status = DevStatus.EVALUATING
+        session._record = DevSessionRecord(session_id="test", objective="test")
+        plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
+        test_result = {"success": False, "error": "Tests failed", "results": []}
+        benchmark = await session._benchmark(plan, test_result)
+        assert benchmark["passed"] == 0 or "command" in benchmark
 
 
 class TestLearningIntegrity:

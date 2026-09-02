@@ -6,11 +6,19 @@ risky operations. Supports both interactive (CLI) and non-interactive
 (auto-approve) modes.
 """
 
+import hashlib
+import hmac
+import os
+import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
 from evora.logger import Logger, Stage
+
+
+SECRET_KEY = os.urandom(32)
 
 
 class ApprovalDecision(str, Enum):
@@ -30,6 +38,60 @@ class ApprovalRequest:
     options: list[str] = field(default_factory=list)
 
 
+@dataclass
+class ApprovalToken:
+    """One-time approval token bound to a specific session, plan, and identity."""
+    token_id: str
+    session_id: str
+    plan_id: str
+    candidate_id: str
+    approved_by: str
+    issued_at: float
+    nonce: str
+    signature: str
+
+    @staticmethod
+    def _sign(session_id: str, plan_id: str, candidate_id: str, approved_by: str, issued_at: float, nonce: str) -> str:
+        payload = f"{session_id}:{plan_id}:{candidate_id}:{approved_by}:{issued_at}:{nonce}"
+        return hmac.new(SECRET_KEY, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    @classmethod
+    def create(cls, session_id: str, plan_id: str, candidate_id: str, approved_by: str) -> "ApprovalToken":
+        nonce = uuid.uuid4().hex[:16]
+        issued_at = time.time()
+        signature = cls._sign(session_id, plan_id, candidate_id, approved_by, issued_at, nonce)
+        return cls(
+            token_id=f"appr-{uuid.uuid4().hex[:12]}",
+            session_id=session_id,
+            plan_id=plan_id,
+            candidate_id=candidate_id,
+            approved_by=approved_by,
+            issued_at=issued_at,
+            nonce=nonce,
+            signature=signature,
+        )
+
+    def verify(self, session_id: str, plan_id: str, candidate_id: str, ttl: float = 3600.0) -> bool:
+        if self.session_id != session_id or self.plan_id != plan_id or self.candidate_id != candidate_id:
+            return False
+        if time.time() - self.issued_at > ttl:
+            return False
+        expected = self._sign(self.session_id, self.plan_id, self.candidate_id, self.approved_by, self.issued_at, self.nonce)
+        return hmac.compare_digest(self.signature, expected)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "token_id": self.token_id,
+            "session_id": self.session_id,
+            "plan_id": self.plan_id,
+            "candidate_id": self.candidate_id,
+            "approved_by": self.approved_by,
+            "issued_at": self.issued_at,
+            "nonce": self.nonce,
+            "signature": self.signature,
+        }
+
+
 class ApprovalSystem:
     """Manages user approval flow for plans and risky operations."""
 
@@ -43,22 +105,24 @@ class ApprovalSystem:
         self.auto_approve = auto_approve
         self.auto_approve_level = auto_approve_level
         self._approval_callbacks: list = []
+        self._issued_tokens: dict[str, ApprovalToken] = {}
 
     def register_callback(self, callback):
         """Register a callback for programmatic approval (used in non-interactive mode)."""
         self._approval_callbacks.append(callback)
 
-    def approve_plan(self, plan_text: str, plan_obj: Any = None) -> ApprovalDecision:
-        """Present a plan and ask for approval."""
+    def _authoritative_decision(self, plan_text: str, plan_obj: Any = None) -> tuple[ApprovalDecision, Optional[str]]:
         if self.auto_approve:
             if self.logger:
                 self.logger.ask(f"Auto-approved plan (auto_approve={self.auto_approve})")
-            return ApprovalDecision.APPROVE
+            return ApprovalDecision.APPROVE, "auto_approve"
 
         for cb in self._approval_callbacks:
             result = cb(plan_text, plan_obj)
             if result is not None:
-                return result
+                if isinstance(result, ApprovalDecision):
+                    return result, "callback"
+                return ApprovalDecision(result), "callback"
 
         if self.logger:
             self.logger.ask("Approval required for plan")
@@ -75,7 +139,7 @@ class ApprovalSystem:
         try:
             choice = input("\nYour choice [1]: ").strip()
         except EOFError:
-            return ApprovalDecision.REJECT
+            return ApprovalDecision.REJECT, "interactive"
 
         if not choice:
             choice = "1"
@@ -88,10 +152,27 @@ class ApprovalSystem:
             "5": ApprovalDecision.EXPLAIN,
         }
 
-        return mapping.get(choice, ApprovalDecision.REJECT)
+        return mapping.get(choice, ApprovalDecision.REJECT), "interactive"
+
+    def approve_plan(self, plan_text: str, plan_obj: Any = None) -> ApprovalDecision:
+        decision, _ = self._authoritative_decision(plan_text, plan_obj)
+        return decision
+
+    def issue_approval_token(self, session_id: str, plan_id: str, candidate_id: str, approved_by: str) -> Optional[ApprovalToken]:
+        decision, source = self._authoritative_decision("", None)
+        if decision != ApprovalDecision.APPROVE:
+            return None
+        token = ApprovalToken.create(session_id, plan_id, candidate_id, approved_by)
+        self._issued_tokens[token.token_id] = token
+        return token
+
+    def consume_approval_token(self, token_id: str, session_id: str, plan_id: str, candidate_id: str, ttl: float = 3600.0) -> bool:
+        token = self._issued_tokens.pop(token_id, None)
+        if token is None:
+            return False
+        return token.verify(session_id, plan_id, candidate_id, ttl)
 
     def approve_command(self, command: str, level: str = "ask", reason: str = "") -> bool:
-        """Ask for approval before executing a risky command."""
         if level.lower() == "safe":
             return True
 
@@ -122,7 +203,6 @@ class ApprovalSystem:
         return choice in ("", "y", "yes")
 
     def get_modification(self, message: str = "Enter your modification:") -> str:
-        """Get a free-text modification from the user."""
         print(f"\n[ASK] {message}")
         try:
             return input("> ").strip()
@@ -130,7 +210,6 @@ class ApprovalSystem:
             return ""
 
     def explain_plan(self, plan_text: str) -> str:
-        """Provide an explanation of the plan (user can then decide)."""
         print(f"\n[ASK] Plan Explanation:")
         print(f"  - This plan is generated based on your request.")
         print(f"  - Each step is an atomic action that EVORA will execute.")

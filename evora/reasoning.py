@@ -119,39 +119,54 @@ Candidate approaches:
         return self._parse_response(raw_response, context)
 
     def _parse_response(self, raw: str, context: ReasoningContext) -> ReasoningResult:
-        """Parse model response into a ReasoningResult."""
+        """Parse model response into a ReasoningResult.
+
+        Malformed or missing responses are treated as hard failures, not silent fallbacks.
+        """
         if not raw:
             return ReasoningResult(
-                summary=f"Insufficient information to reason about: {context.objective}",
-                selected_approach="require_more_data",
-                confidence=0.2,
+                summary=f"Reasoning aborted: no model response for {context.objective}",
+                selected_approach="abort",
+                confidence=0.0,
                 risks=["No model response available"],
-                next_action="retry_reasoning",
+                next_action="abort",
                 raw_response=raw,
+                metadata=context.metadata,
             )
 
         try:
             json_match = raw.find("{")
-            if json_match >= 0:
-                data = json.loads(raw[json_match:])
-                return ReasoningResult(
-                    summary=data.get("summary", raw[:200]),
-                    selected_approach=data.get("selected_approach", "unknown"),
-                    confidence=float(data.get("confidence", 0.5)),
-                    risks=data.get("risks", []),
-                    next_action=data.get("next_action", "continue"),
-                    raw_response=raw,
-                    metadata=context.metadata,
-                )
-        except Exception:
-            pass
+            if json_match < 0:
+                raise ValueError("No JSON object found in response")
 
-        return ReasoningResult(
-            summary=raw[:200],
-            selected_approach="unknown",
-            confidence=0.3,
-            risks=["Failed to parse reasoning response"],
-            next_action="retry_reasoning",
-            raw_response=raw,
-            metadata=context.metadata,
-        )
+            data = json.loads(raw[json_match:])
+            required_fields = ["summary", "selected_approach", "confidence", "next_action"]
+            missing = [f for f in required_fields if f not in data]
+            if missing:
+                raise ValueError(f"Missing required reasoning fields: {missing}")
+
+            confidence = float(data.get("confidence", 0.5))
+            if confidence < 0.0 or confidence > 1.0:
+                raise ValueError(f"Confidence out of bounds: {confidence}")
+
+            return ReasoningResult(
+                summary=data["summary"],
+                selected_approach=data["selected_approach"],
+                confidence=confidence,
+                risks=data.get("risks", []),
+                next_action=data["next_action"],
+                raw_response=raw,
+                metadata=context.metadata,
+            )
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Reasoning response parsing failed: {e}")
+            return ReasoningResult(
+                summary=f"Reasoning aborted: {e}",
+                selected_approach="abort",
+                confidence=0.0,
+                risks=[f"Malformed reasoning response: {e}"],
+                next_action="abort",
+                raw_response=raw,
+                metadata=context.metadata,
+            )

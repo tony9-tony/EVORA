@@ -33,6 +33,7 @@ from evora.inspector import DevelopmentInspector, InspectionReport
 from evora.discovery import ImprovementDiscovery, ImprovementCandidate
 from evora.dev_planner import DevelopmentPlanner, DevelopmentPlan
 from evora.self_improve import SelfImproveTool, ImprovementHistory, ImprovementStatus, ImprovementRecord
+from evora.approval import ApprovalSystem, ApprovalDecision, ApprovalToken
 
 
 class DevStatus(str, Enum):
@@ -156,6 +157,9 @@ class SelfDevelopmentSession:
 
         self._record: Optional[DevSessionRecord] = None
         self._status = DevStatus.IDLE
+        self._approval_token: Optional[ApprovalToken] = None
+        self._implemented_plan_ids: set[str] = set()
+        self._completed_sessions: set[str] = set()
 
     async def run(self, objective: str, max_candidates: int = 3) -> str:
         """Run the full autonomous development loop."""
@@ -185,9 +189,11 @@ class SelfDevelopmentSession:
 
             plan = await self._plan(objective, selected)
             await self._transition(DevStatus.PLANNING)
-            approved = await self._request_approval(objective, selected, plan)
+            approved, token = await self._request_approval(objective, selected, plan)
             if not approved:
                 return self._complete(DevStatus.REJECTED, "Creator rejected the proposed change.")
+
+            self._approval_token = token
 
             result = await self._implement(selected, plan)
             if not result.get("success"):
@@ -203,8 +209,12 @@ class SelfDevelopmentSession:
                 )
 
             await self._transition(DevStatus.EVALUATING)
-            benchmark = await self._benchmark(plan)
+            benchmark = await self._benchmark(plan, test_result)
             lesson = self._extract_lesson(test_result, benchmark)
+            completed = getattr(self, "_completed_sessions", None)
+            if completed is not None:
+                completed.add(session_id)
+            self._approval_token = None
             return self._complete(
                 DevStatus.SUCCEEDED,
                 f"Improvement applied and validated successfully. Lesson: {lesson}",
@@ -273,7 +283,7 @@ class SelfDevelopmentSession:
         self._record.plan = plan.to_dict()
         return plan
 
-    async def _request_approval(self, objective: str, candidate: ImprovementCandidate, plan: DevelopmentPlan) -> bool:
+    async def _request_approval(self, objective: str, candidate: ImprovementCandidate, plan: DevelopmentPlan) -> tuple[bool, Optional[ApprovalToken]]:
         """PROPOSE → ASK CREATOR: Request creator approval."""
         await self._transition(DevStatus.AWAITING_APPROVAL)
         if self.logger:
@@ -303,6 +313,7 @@ class SelfDevelopmentSession:
         decision = self.approval.approve_plan(proposal_text, plan.to_dict())
         approved = decision.value in ("approve", "approved")
 
+        token = None
         if approved:
             approver_name = "creator"
             if self.identity_service:
@@ -314,13 +325,39 @@ class SelfDevelopmentSession:
             if self._record:
                 self._record.approved_by = approver_name
             await self._transition(DevStatus.APPROVED)
+            token = self.approval.issue_approval_token(
+                session_id=self._record.session_id,
+                plan_id=plan.id,
+                candidate_id=candidate.id,
+                approved_by=approver_name,
+            )
         else:
             await self._transition(DevStatus.REJECTED)
 
-        return approved
+        return approved, token
 
     async def _implement(self, candidate: ImprovementCandidate, plan: DevelopmentPlan) -> dict[str, Any]:
         """IMPLEMENT: Execute the approved plan."""
+        completed_sessions = getattr(self, "_completed_sessions", set())
+        if self._record and self._record.session_id in completed_sessions:
+            return {"success": False, "error": "Session already completed; cannot re-implement", "results": []}
+
+        implemented_plans = getattr(self, "_implemented_plan_ids", set())
+        if plan.id in implemented_plans:
+            return {"success": False, "error": "Plan already implemented; duplicate execution rejected", "results": []}
+
+        if self._approval_token is None:
+            return {"success": False, "error": "No approval token; implementation requires valid creator approval", "results": []}
+
+        token_valid = self.approval.consume_approval_token(
+            token_id=self._approval_token.token_id,
+            session_id=self._approval_token.session_id,
+            plan_id=self._approval_token.plan_id,
+            candidate_id=self._approval_token.candidate_id,
+        )
+        if not token_valid:
+            return {"success": False, "error": "Approval token invalid or already consumed", "results": []}
+
         await self._transition(DevStatus.IMPLEMENTING)
         if self.logger:
             self.logger.code(f"Implementing: {candidate.title}")
@@ -331,25 +368,50 @@ class SelfDevelopmentSession:
             except PermissionError as e:
                 return {"success": False, "error": f"[DENIED] {e}", "results": []}
 
+        approved_files = {Path(p).resolve() for p in getattr(candidate, "affected_files", []) if p}
+
         results = []
         for step in plan.steps:
             if step.action_type == "read_file":
                 continue
 
             if step.action_type in ("edit_file", "write_file"):
-                file_path = step.action_args.get("path", "")
-                if file_path and self.self_improve and hasattr(self.self_improve, "validator"):
-                    if self.self_improve.validator.is_critical_control_file(file_path):
+                raw_path = step.action_args.get("path", "")
+                if raw_path:
+                    resolved = Path(raw_path).resolve()
+                    if resolved.is_symlink():
                         return {
                             "success": False,
-                            "error": f"Refusing to modify critical control file: {file_path}",
+                            "error": f"Refusing to modify symlink: {raw_path} -> {resolved}",
                             "results": results,
                         }
+                    if not resolved.is_relative_to(self.workspace):
+                        return {
+                            "success": False,
+                            "error": f"Refusing to modify path outside workspace: {raw_path}",
+                            "results": results,
+                        }
+                    if approved_files and resolved not in approved_files:
+                        return {
+                            "success": False,
+                            "error": f"Path {resolved} is not in the approved file set for this candidate",
+                            "results": results,
+                        }
+                    if self.self_improve and hasattr(self.self_improve, "validator"):
+                        if self.self_improve.validator.is_critical_control_file(str(resolved)):
+                            return {
+                                "success": False,
+                                "error": f"Refusing to modify critical control file: {resolved}",
+                                "results": results,
+                            }
 
             result = await self.tools.execute(step.action_type, **step.action_args)
             results.append({"step": step.name, "success": result.success, "output": result.output, "error": result.error})
             if not result.success:
                 return {"success": False, "error": f"Step failed: {step.name} - {result.error}", "results": results}
+
+        implemented_plans = getattr(self, "_implemented_plan_ids", set())
+        implemented_plans.add(plan.id)
 
         if self.self_improve and hasattr(self.self_improve, "history") and candidate:
             try:
@@ -385,16 +447,55 @@ class SelfDevelopmentSession:
         self._record.test_result = {"passed": all_passed, "results": test_results}
         return {"success": all_passed, "results": test_results}
 
-    async def _benchmark(self, plan: DevelopmentPlan) -> dict[str, Any]:
-        """BENCHMARK: Measure post-change state."""
+    async def _benchmark(self, plan: DevelopmentPlan, test_result: dict) -> dict[str, Any]:
+        """BENCHMARK: Measure post-change state using actual execution evidence."""
         await self._transition(DevStatus.BENCHMARKING)
         if self.logger:
             self.logger.verify("Benchmarking...")
 
+        passed = 0
+        failed = 0
+        command = ""
+        exit_code = -1
+        output = ""
+        timing = 0.0
+        try:
+            start = time.time()
+            test_tool = self.tools.get("run_tests")
+            if test_tool:
+                tool_result = await test_tool.execute(framework="pytest", path="tests/")
+                output = tool_result.output or tool_result.error or ""
+                command = "python -m pytest tests/ -q --tb=short"
+                exit_code = 0 if tool_result.success else 1
+                timing = time.time() - start
+                import re
+                pass_match = re.search(r"(\d+) passed", output)
+                fail_match = re.search(r"(\d+) failed", output)
+                passed = int(pass_match.group(1)) if pass_match else 0
+                failed = int(fail_match.group(1)) if fail_match else 0
+            else:
+                command = "no_test_runner"
+                exit_code = 0
+                passed = 1 if test_result.get("success") else 0
+                failed = 0 if test_result.get("success") else 1
+                output = test_result.get("results", [{}])[0].get("output", "") if test_result.get("results") else ""
+        except Exception as e:
+            output = str(e)
+            exit_code = -1
+            passed = 0
+            failed = 1
+
+        total = max(passed + failed, 1)
         benchmark = {
             "timestamp": datetime.now().isoformat(),
-            "test_pass_rate": "unknown",
+            "command": command,
+            "exit_code": exit_code,
+            "passed": passed,
+            "failed": failed,
+            "test_pass_rate": f"{passed/total:.0%}",
             "files_changed": len(plan.steps),
+            "output": output[-2000:] if len(output) > 2000 else output,
+            "timing_seconds": round(timing, 3),
         }
 
         self._record.benchmark_after = benchmark
@@ -433,6 +534,12 @@ class SelfDevelopmentSession:
                 self._record.error = message
             else:
                 self._record.lesson = message
+
+        if self._record:
+            completed = getattr(self, "_completed_sessions", None)
+            if completed is not None:
+                completed.add(self._record.session_id)
+        self._approval_token = None
 
         if status == DevStatus.SUCCEEDED:
             return f"SUCCESS\n\n{message}"

@@ -104,8 +104,9 @@ class TestReasoningEngine:
         engine = ReasoningEngine(manager, logger)
         context = ReasoningContext(objective="Improve tests")
         result = await engine.reason(context)
-        assert result.confidence < 0.5
-        assert "Model down" in result.raw_response or result.next_action == "retry_reasoning"
+        assert result.confidence == 0.0
+        assert result.next_action == "abort"
+        assert "Model down" in result.summary or "aborted" in result.summary.lower()
 
     @pytest.mark.asyncio
     async def test_reason_handles_empty_response(self, logger):
