@@ -45,10 +45,30 @@ class ChatSession:
         self._closed = False
 
         current_identity = self.identity_service.current_identity()
+        creator = self.identity_service.get_creator()
+
+        if creator and creator.is_creator:
+            display_name = creator.display_name or creator.name
+            if creator.nickname and not display_name:
+                display_name = f"{creator.name} ({creator.nickname})"
+            creator_line = (
+                f"Your creator is: {display_name}. "
+                f"Role: {creator.role or 'Creator'}. "
+                f"Relationship: {creator.relationship or 'Creator'}. "
+            )
+            if creator.vision:
+                creator_line += f"Creator vision: {creator.vision}. "
+            if creator.preferences:
+                prefs = "; ".join(f"{k}={v}" for k, v in creator.preferences.items())
+                creator_line += f"Creator preferences: {prefs}. "
+        else:
+            creator_line = ""
+
         self.system_prompt = (
             "You are EVORA, an AI coding assistant. "
             f"Current identity: {current_identity.name} "
             f"(authority: {current_identity.authority.value}). "
+            f"{creator_line}"
             "Be helpful, concise, and direct."
         )
         self.messages: list[Message] = [Message(role=Role.SYSTEM, content=self.system_prompt)]
@@ -79,14 +99,18 @@ class ChatSession:
             "memory_count": memory_count,
         }
 
-    async def stream_message(self, user_input: str):
+    async def stream_message(self, user_input: str, max_tokens: int = 1024, temperature: float = 0.7):
         """Process a chat message and stream the response token-by-token.
 
         Yields event dicts:
             {"type": "content", "content": "chunk text"}
             {"type": "tool", "name": "...", "output": "...", "error": "..."}
             {"type": "error", "error": "..."}
+            {"type": "metadata", "model": "...", "response_time": 1.23}
         """
+        import time
+        start_time = time.time()
+
         messages = list(self.messages)
         messages.append(Message(role=Role.USER, content=user_input))
         request_messages = list(messages)
@@ -97,10 +121,10 @@ class ChatSession:
                 relevant = self.memory_service.retrieve_relevant(
                     goal=user_input,
                     project=self.workspace_name,
-                    limit=5,
+                    limit=3,
                 )
                 if relevant:
-                    context = "\n".join([f"- {r.entry.content[:200]}" for r in relevant[:5]])
+                    context = "\n".join([f"- {r.entry.content[:150]}" for r in relevant[:3]])
         except Exception as e:
             self.logger.debug(f"Memory retrieval skipped: {e}")
 
@@ -108,10 +132,17 @@ class ChatSession:
             request_messages.insert(-1, Message(role=Role.SYSTEM, content=f"Relevant memories:\n{context}"))
 
         from evora.model import ChatRequest
-        request = ChatRequest(messages=request_messages, max_tokens=4096, temperature=0.7, stream=True)
+        request = ChatRequest(
+            messages=request_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
 
         active = self.manager.active
         full_content = ""
+        model_used = active.model() if active else "none"
+
         try:
             async for chunk in active.chat_stream(request):
                 if chunk.content:
@@ -127,7 +158,9 @@ class ChatSession:
 
         self.messages = messages
         self.messages.append(Message(role=Role.ASSISTANT, content=full_content))
-        yield {"type": "done", "response": full_content}
+
+        response_time = time.time() - start_time
+        yield {"type": "done", "response": full_content, "model": model_used, "response_time": round(response_time, 2)}
 
     def clear(self) -> None:
         self.messages = [Message(role=Role.SYSTEM, content=self.system_prompt)]
@@ -140,11 +173,13 @@ class ChatSession:
             memory_count = len(self.memory_service.list_memories(project=self.workspace_name, limit=100))
         except Exception:
             pass
+        display_name = self.identity_service.get_display_name()
         return {
             "provider": active.name() if active else "none",
             "model": active.model() if active else "none",
             "identity": identity.name,
             "authority": identity.authority.value,
+            "display_name": display_name,
             "workspace": self.config.workspace_dir,
             "memory_count": memory_count,
         }

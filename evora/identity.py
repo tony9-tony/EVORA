@@ -92,6 +92,12 @@ class Identity:
     authority: AuthorityLevel
     created_at: str
     config_path: Optional[str] = None
+    nickname: Optional[str] = None
+    role: Optional[str] = None
+    relationship: Optional[str] = None
+    vision: Optional[str] = None
+    preferences: Optional[dict[str, Any]] = None
+    display_name: Optional[str] = None
 
     @classmethod
     def create(cls, name: str, authority: AuthorityLevel = AuthorityLevel.USER) -> "Identity":
@@ -104,7 +110,16 @@ class Identity:
         )
 
     @classmethod
-    def create_creator(cls, name: str = "creator") -> "Identity":
+    def create_creator(
+        cls,
+        name: str = "creator",
+        nickname: Optional[str] = None,
+        role: Optional[str] = None,
+        relationship: Optional[str] = None,
+        vision: Optional[str] = None,
+        preferences: Optional[dict[str, Any]] = None,
+        display_name: Optional[str] = None,
+    ) -> "Identity":
         """Create a creator identity.
 
         This does NOT hardcode a username. The creator designation comes
@@ -115,6 +130,12 @@ class Identity:
             name=name,
             authority=AuthorityLevel.CREATOR,
             created_at=datetime.now().isoformat(),
+            nickname=nickname,
+            role=role,
+            relationship=relationship,
+            vision=vision,
+            preferences=preferences,
+            display_name=display_name,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,6 +144,12 @@ class Identity:
             "name": self.name,
             "authority": self.authority.value,
             "created_at": self.created_at,
+            "nickname": self.nickname,
+            "role": self.role,
+            "relationship": self.relationship,
+            "vision": self.vision,
+            "preferences": self.preferences,
+            "display_name": self.display_name,
         }
 
     @classmethod
@@ -133,6 +160,12 @@ class Identity:
             authority=AuthorityLevel(data.get("authority", AuthorityLevel.USER.value)),
             created_at=data.get("created_at", datetime.now().isoformat()),
             config_path=data.get("config_path"),
+            nickname=data.get("nickname"),
+            role=data.get("role"),
+            relationship=data.get("relationship"),
+            vision=data.get("vision"),
+            preferences=data.get("preferences"),
+            display_name=data.get("display_name"),
         )
 
     @property
@@ -363,3 +396,56 @@ class IdentityService:
         creator changes require existing CREATOR authority.
         """
         return self.store.bootstrap_creator(name)
+
+    def bootstrap_creator_with_profile(
+        self,
+        name: str,
+        nickname: Optional[str] = None,
+        role: Optional[str] = None,
+        relationship: Optional[str] = None,
+        vision: Optional[str] = None,
+        preferences: Optional[dict[str, Any]] = None,
+        display_name: Optional[str] = None,
+    ) -> Identity:
+        """Bootstrap creator with full profile metadata.
+
+        Bypasses authority checks since no creator exists yet.
+        Stores creator profile (nickname, role, vision, preferences, etc.)
+        in the protected creator config file.
+        """
+        creator = Identity.create_creator(
+            name=name,
+            nickname=nickname,
+            role=role,
+            relationship=relationship,
+            vision=vision,
+            preferences=preferences,
+            display_name=display_name,
+        )
+        self.store.set_creator(creator)
+        self.store.set_current(creator)
+        return creator
+
+    def get_creator_profile(self) -> dict[str, Any]:
+        """Get the creator identity profile as a dict, or empty dict if not set."""
+        creator = self.get_creator()
+        if creator is None:
+            return {}
+        return {
+            "name": creator.name,
+            "nickname": creator.nickname,
+            "display_name": creator.display_name or creator.name,
+            "role": creator.role,
+            "relationship": creator.relationship,
+            "vision": creator.vision,
+            "preferences": creator.preferences,
+        }
+
+    def get_display_name(self) -> str:
+        """Get the current identity's display name (nickname if available)."""
+        identity = self.current_identity()
+        if identity.is_creator and identity.display_name:
+            return identity.display_name
+        if identity.nickname:
+            return f"{identity.name} ({identity.nickname})"
+        return identity.name

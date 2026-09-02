@@ -474,8 +474,9 @@ CHAT_HTML = """<!DOCTYPE html>
 
     evtSource.addEventListener('done', function(e) {
       hideThinking();
+      const data = JSON.parse(e.data);
       if (!hasError) {
-        finalizeStreamingBubble(null);
+        finalizeStreamingBubble(data.model ? ' • ' + data.model + ' • ' + (data.response_time || '?') + 's' : null);
       }
       evtSource.close();
       setProcessing(false);
@@ -592,7 +593,7 @@ CHAT_HTML = """<!DOCTYPE html>
       const res = await fetch('/api/status');
       const data = await res.json();
       modelStatus.textContent = data.provider + ' • ' + data.model;
-      identityPill.textContent = data.identity + ' (' + data.authority + ')';
+      identityPill.textContent = data.display_name || (data.identity + ' (' + data.authority + ')');
       memoryPill.textContent = 'memory: ' + (data.memory_count || 0);
     } catch (e) {
       modelStatus.textContent = 'Disconnected';
@@ -678,6 +679,7 @@ class ChatHandler(BaseHTTPRequestHandler):
     def _handle_stream(self):
         """Handle SSE streaming request at /api/chat/stream?message=..."""
         from urllib.parse import urlparse, parse_qs
+        from queue import Queue
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
         message = params.get("message", [None])[0]
@@ -689,37 +691,33 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
         loop = _get_event_loop()
+        event_queue: Queue = Queue()
 
-        async def stream_to_response():
+        async def collect_events():
             try:
                 async for event in _stream_chat_message(message):
-                    event_type = event.get("type", "content")
-                    data = json.dumps({k: v for k, v in event.items() if k != "type"})
-                    line = f"event: {event_type}\ndata: {data}\n\n"
-                    self.wfile.write(line.encode("utf-8"))
-                    self.wfile.flush()
+                    event_queue.put(event)
             except Exception as e:
-                err_data = {"error": str(e)}
-                line = f"event: error\ndata: {json.dumps(err_data)}\n\n"
-                self.wfile.write(line.encode("utf-8"))
-                self.wfile.flush()
-            finally:
-                line = "event: done\ndata: {}\n\n"
-                self.wfile.write(line.encode("utf-8"))
-                self.wfile.flush()
+                event_queue.put({"type": "error", "error": str(e)})
 
-        def run_stream():
+        future = asyncio.run_coroutine_threadsafe(collect_events(), loop)
+
+        while True:
+            event = event_queue.get()
+            event_type = event.get("type", "content")
+            data = {k: v for k, v in event.items() if k != "type"}
+            line = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
             try:
-                asyncio.run_coroutine_threadsafe(
-                    stream_to_response(), loop
-                ).result()
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
             except Exception:
-                pass
-
-        threading.Thread(target=run_stream, daemon=True).start()
+                break
+            if event_type in ("done", "error"):
+                break
 
     def _send_json(self, data):
         payload = json.dumps(data).encode("utf-8")
