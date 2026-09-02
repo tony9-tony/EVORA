@@ -19,11 +19,15 @@ Safety boundaries:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os
 import re
 import shutil
 import subprocess
 import time
+import tempfile
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -80,6 +84,7 @@ class ImprovementRecord:
     after_validation: Optional[dict] = None
     error: Optional[str] = None
     history_id: str = field(default_factory=lambda: f"imp-{uuid.uuid4().hex[:12]}")
+    signature: Optional[str] = None         # HMAC integrity signature
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +97,7 @@ class ImprovementRecord:
             "before_validation": self.before_validation,
             "after_validation": self.after_validation,
             "error": self.error,
+            "signature": self.signature,
         }
 
     @classmethod
@@ -109,6 +115,7 @@ class ImprovementRecord:
             before_validation=data.get("before_validation"),
             after_validation=data.get("after_validation"),
             error=data.get("error"),
+            signature=data.get("signature"),
         )
 
 
@@ -118,26 +125,124 @@ class ImprovementHistory:
     Files:
         <evora_data_dir>/improvements/
             <history_id>.json
-        <evora_data_dir>/improvements/_current.json  (pointer to active record)
+        <evora_data_dir>/improvements/.hmac_key  (integrity key)
     """
+
+    VALID_TRANSITIONS = {
+        ImprovementStatus.PENDING: {ImprovementStatus.APPROVED, ImprovementStatus.REJECTED},
+        ImprovementStatus.APPROVED: {ImprovementStatus.RUNNING},
+        ImprovementStatus.RUNNING: {ImprovementStatus.SUCCESS, ImprovementStatus.FAILED},
+        ImprovementStatus.SUCCESS: set(),
+        ImprovementStatus.FAILED: set(),
+        ImprovementStatus.REJECTED: set(),
+    }
+
+    TERMINAL_STATES = {ImprovementStatus.SUCCESS, ImprovementStatus.FAILED, ImprovementStatus.REJECTED}
 
     def __init__(self, data_dir: Optional[str] = None):
         self.data_dir = Path(data_dir) if data_dir else Path.home() / ".evora" / "improvements"
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._key = self._load_or_create_key()
+
+    def _key_path(self) -> Path:
+        return self.data_dir / ".hmac_key"
+
+    def _load_or_create_key(self) -> bytes:
+        key_path = self._key_path()
+        if key_path.exists():
+            return key_path.read_bytes()
+        key = os.urandom(32)
+        key_path.write_bytes(key)
+        return key
+
+    def _compute_signature(self, record: ImprovementRecord) -> str:
+        payload = record.to_dict()
+        payload.pop("signature", None)
+        payload_bytes = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hmac.new(self._key, payload_bytes, hashlib.sha256).hexdigest()
+
+    def _verify_signature(self, record: ImprovementRecord) -> bool:
+        if not record.signature:
+            return False
+        expected = self._compute_signature(record)
+        return hmac.compare_digest(record.signature, expected)
+
+    def _atomic_write(self, path: Path, data: str) -> None:
+        dir_path = path.parent
+        dir_path.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(dir_path), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _validate_transition(self, record: ImprovementRecord) -> None:
+        """Raise ValueError if the status transition is invalid."""
+        path = self.data_dir / f"{record.history_id}.json"
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = ImprovementRecord.from_dict(json.load(f))
+                if record.status != existing.status:
+                    allowed = self.VALID_TRANSITIONS.get(existing.status, set())
+                    if record.status not in allowed:
+                        raise ValueError(
+                            f"Invalid state transition: {existing.status.value} -> {record.status.value}"
+                        )
+            except FileNotFoundError:
+                pass
 
     def record(self, record: ImprovementRecord) -> str:
-        """Persist an improvement record. Returns the history_id."""
-        path = self.data_dir / f"{record.history_id}.json"
+        """Persist an improvement record. Returns the history_id.
+
+        Terminal states SUCCESS and FAILED cannot be directly recorded —
+        they must be reached via valid transitions through update().
+        REJECTED is allowed as it is a valid terminal state from PENDING.
+        """
+        if record.status in {ImprovementStatus.SUCCESS, ImprovementStatus.FAILED}:
+            raise ValueError(
+                f"Cannot directly record terminal state {record.status.value}. "
+                f"Use update() after reaching terminal state via valid transitions."
+            )
+
         record.applied_at = record.applied_at or datetime.now().isoformat()
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(record.to_dict(), f, indent=2, ensure_ascii=False)
+        record.signature = self._compute_signature(record)
+        path = self.data_dir / f"{record.history_id}.json"
+        self._atomic_write(path, json.dumps(record.to_dict(), indent=2, ensure_ascii=False))
         return record.history_id
 
     def update(self, record: ImprovementRecord) -> None:
-        """Update an existing record (status changes, validation results)."""
+        """Update an existing record (status changes, validation results).
+
+        Enforces valid state transitions and prevents modification of
+        terminal records.
+        """
         path = self.data_dir / f"{record.history_id}.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(record.to_dict(), f, indent=2, ensure_ascii=False)
+        if not path.exists():
+            raise FileNotFoundError(f"History record not found: {record.history_id}")
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing = ImprovementRecord.from_dict(json.load(f))
+        except Exception:
+            raise
+
+        if existing.status in self.TERMINAL_STATES:
+            raise ValueError(
+                f"Refusing to modify terminal record {record.history_id} "
+                f"(status={existing.status.value}). Terminal records are immutable."
+            )
+
+        self._validate_transition(record)
+
+        record.signature = self._compute_signature(record)
+        self._atomic_write(path, json.dumps(record.to_dict(), indent=2, ensure_ascii=False))
 
     def list(self, limit: int = 50) -> list[ImprovementRecord]:
         """List records, newest first."""
@@ -145,7 +250,10 @@ class ImprovementHistory:
         for path in sorted(self.data_dir.glob("imp-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    records.append(ImprovementRecord.from_dict(json.load(f)))
+                    record = ImprovementRecord.from_dict(json.load(f))
+                if record.signature and not self._verify_signature(record):
+                    continue
+                records.append(record)
                 if len(records) >= limit:
                     break
             except Exception:
@@ -157,7 +265,10 @@ class ImprovementHistory:
         if not path.exists():
             return None
         with open(path, "r", encoding="utf-8") as f:
-            return ImprovementRecord.from_dict(json.load(f))
+            record = ImprovementRecord.from_dict(json.load(f))
+        if record.signature and not self._verify_signature(record):
+            return None
+        return record
 
     def summary(self) -> dict[str, Any]:
         """Return a summary of improvement history statistics."""
@@ -177,6 +288,7 @@ class ChangeValidator:
 
     Enforces:
     - All file operations stay within the workspace
+    - Critical control files cannot be modified by self-improvement
     - Before/after validation runs (e.g., test suite, import checks)
     - No secrets or sensitive data are introduced
     """
@@ -188,6 +300,17 @@ class ChangeValidator:
         re.compile(r"['\"]?secret['\"]?\s*[:=]\s*['\"][^'\"]+['\"]", re.I),
         re.compile(r"['\"]?token['\"]?\s*[:=]\s*['\"][^'\"]+['\"]", re.I),
     ]
+
+    CRITICAL_CONTROL_PATTERNS = [
+        re.compile(r"^evora/self_improve\.py$", re.I),
+        re.compile(r"^evora/(security|identity|approval|tools)\.py$", re.I),
+        re.compile(r"^identities/.*\.json$", re.I),
+        re.compile(r"^\.evora/", re.I),
+    ]
+
+    BLOCKED_EXTENSIONS = {
+        ".env", ".git", ".pem", ".key", ".p12", ".pfx",
+    }
 
     def __init__(self, workspace_dir: str, security: PermissionManager, logger: Optional[Logger] = None):
         self.workspace = Path(workspace_dir).resolve()
@@ -213,6 +336,30 @@ class ChangeValidator:
                 found.append(f"Secret pattern detected: {pattern.pattern[:50]}")
         return found
 
+    def is_critical_control_file(self, path: str) -> bool:
+        """Check if a path points to a critical control file that must not be
+        modified by normal self-improvement."""
+        resolved = Path(path).resolve()
+        try:
+            rel = resolved.relative_to(self.workspace)
+        except ValueError:
+            return False
+
+        rel_str = str(rel).replace("\\", "/")
+        for pattern in self.CRITICAL_CONTROL_PATTERNS:
+            if pattern.match(rel_str):
+                return True
+
+        suffix = resolved.suffix.lower()
+        if suffix in self.BLOCKED_EXTENSIONS:
+            return True
+
+        return False
+
+    def is_sensitive_extension(self, path: str) -> bool:
+        """Check if a file extension is sensitive."""
+        return Path(path).suffix.lower() in self.BLOCKED_EXTENSIONS
+
     def validate_before(self, files: list[str], content_changes: dict[str, str]) -> dict[str, Any]:
         """Validate before a change is applied.
 
@@ -231,12 +378,38 @@ class ChangeValidator:
                 result["valid"] = False
                 result["errors"].append(str(e))
 
+            if self.is_critical_control_file(file_path):
+                result["valid"] = False
+                result["errors"].append(
+                    f"Refusing to modify critical control file: {file_path}"
+                )
+
+            if self.is_sensitive_extension(file_path):
+                result["valid"] = False
+                result["errors"].append(
+                    f"Refusing to modify sensitive file type: {file_path}"
+                )
+
         for path, content in content_changes.items():
             try:
                 self.validate_file_path(path)
             except PermissionError as e:
                 result["valid"] = False
                 result["errors"].append(str(e))
+                continue
+
+            if self.is_critical_control_file(path):
+                result["valid"] = False
+                result["errors"].append(
+                    f"Refusing to modify critical control file: {path}"
+                )
+                continue
+
+            if self.is_sensitive_extension(path):
+                result["valid"] = False
+                result["errors"].append(
+                    f"Refusing to modify sensitive file type: {path}"
+                )
                 continue
 
             secrets = self.contains_secrets(content)
@@ -583,6 +756,13 @@ class SelfImproveTool(Tool):
         if not self.approval_system:
             return ToolResult(success=False, error="No approval system available. Use --auto-approve or configure approval callbacks.")
 
+        if self.validator.is_critical_control_file(file_path):
+            return ToolResult(
+                success=False,
+                error=f"Refusing to modify critical control file: {file_path}. "
+                      f"Critical control files cannot be modified through normal self-improvement.",
+            )
+
         prop = ImprovementProposal(
             id=str(uuid.uuid4()),
             title=f"Modify {Path(file_path).name}",
@@ -612,13 +792,21 @@ class SelfImproveTool(Tool):
             self.history.record(record)
             return ToolResult(success=False, error=f"Proposal rejected by {decision.value}")
 
+        approver_name = "creator"
+        if self.identity_service:
+            try:
+                approver = self.identity_service.current_identity()
+                approver_name = approver.name
+            except Exception:
+                pass
+
         full_path = self.workspace / file_path
         record = ImprovementRecord(
             proposal=prop,
             status=ImprovementStatus.APPROVED,
-            approved_by="creator",
+            approved_by=approver_name,
         )
-        self.history.update(record)
+        self.history.record(record)
 
         record.status = ImprovementStatus.RUNNING
         self.history.update(record)

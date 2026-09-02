@@ -257,12 +257,48 @@ class IdentityStore:
             return Identity.from_dict(data)
         return None
 
-    def set_creator(self, identity: Identity) -> None:
+    def set_creator(self, identity: Identity, caller: Optional[Identity] = None) -> None:
         """Set the creator identity.
 
         The creator identity is stored in a separate protected file.
         This does NOT compare usernames — it sets authority explicitly.
+
+        Args:
+            identity: The identity to set as creator.
+            caller: The identity making this call. Required unless no creator
+                    is currently configured (bootstrap-only scenario).
         """
+        if caller is not None:
+            if not caller.is_creator:
+                raise PermissionError(
+                    f"Identity '{caller.name}' (authority={caller.authority.value}) "
+                    f"is not authorized to set the creator identity. "
+                    f"Required: {AuthorityLevel.CREATOR.value}"
+                )
+        else:
+            if self._creator_path.exists():
+                with open(self._creator_path, "r") as f:
+                    data = json.load(f)
+                existing = Identity.from_dict(data)
+                if existing.is_creator:
+                    raise PermissionError(
+                        "Creator identity already configured. "
+                        "Pass caller=... or use bootstrap_creator() for first-time setup."
+                    )
+
+        if not identity.is_creator:
+            identity = Identity(
+                id=identity.id,
+                name=identity.name,
+                authority=AuthorityLevel.CREATOR,
+                created_at=identity.created_at,
+            )
+        identity.config_path = str(self._creator_path)
+        with open(self._creator_path, "w") as f:
+            json.dump(identity.to_dict(), f, indent=2)
+
+    def _set_creator_unchecked(self, identity: Identity) -> None:
+        """Internal method for first-time bootstrap — bypasses authority check."""
         if not identity.is_creator:
             identity = Identity(
                 id=identity.id,
@@ -294,7 +330,7 @@ class IdentityStore:
                 )
 
         identity = Identity.create_creator(name)
-        self.set_creator(identity)
+        self._set_creator_unchecked(identity)
         self.set_current(identity)
         return identity
 

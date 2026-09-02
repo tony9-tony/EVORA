@@ -75,7 +75,7 @@ class ApprovalSystem:
         try:
             choice = input("\nYour choice [1]: ").strip()
         except EOFError:
-            return ApprovalDecision.APPROVE
+            return ApprovalDecision.REJECT
 
         if not choice:
             choice = "1"
@@ -88,7 +88,7 @@ class ApprovalSystem:
             "5": ApprovalDecision.EXPLAIN,
         }
 
-        return mapping.get(choice, ApprovalDecision.APPROVE)
+        return mapping.get(choice, ApprovalDecision.REJECT)
 
     def approve_command(self, command: str, level: str = "ask", reason: str = "") -> bool:
         """Ask for approval before executing a risky command."""
@@ -117,7 +117,7 @@ class ApprovalSystem:
         try:
             choice = input("\nApprove? [Y/n]: ").strip().lower()
         except EOFError:
-            return True
+            return False
 
         return choice in ("", "y", "yes")
 

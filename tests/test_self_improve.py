@@ -179,7 +179,7 @@ class TestImprovementHistory:
     def test_record_and_persist(self, tmp_workspace):
         history = ImprovementHistory(str(tmp_workspace / "improvements"))
         prop = ImprovementProposal(id="p1", title="T", description="D")
-        record = ImprovementRecord(proposal=prop, status=ImprovementStatus.SUCCESS)
+        record = ImprovementRecord(proposal=prop, status=ImprovementStatus.PENDING)
         record_id = history.record(record)
         assert record_id == record.history_id
         assert record_id.startswith("imp-")
@@ -188,20 +188,22 @@ class TestImprovementHistory:
         assert path.exists()
         with open(path) as f:
             data = json.load(f)
-        assert data["status"] == "success"
+        assert data["status"] == "pending"
 
     def test_update_existing_record(self, tmp_workspace):
         history = ImprovementHistory(str(tmp_workspace / "improvements"))
         prop = ImprovementProposal(id="p1", title="T", description="D")
         record = ImprovementRecord(proposal=prop)
         history.record(record)
-        record.status = ImprovementStatus.SUCCESS
-        record.test_result = "passed=5, failed=0"
+        record.status = ImprovementStatus.APPROVED
+        record.approved_by = "creator"
+        history.update(record)
+        record.status = ImprovementStatus.RUNNING
         history.update(record)
 
         loaded = history.get(record.history_id)
-        assert loaded.status == ImprovementStatus.SUCCESS
-        assert loaded.test_result == "passed=5, failed=0"
+        assert loaded.status == ImprovementStatus.RUNNING
+        assert loaded.approved_by == "creator"
 
     def test_list_returns_newest_first(self, tmp_workspace):
         history = ImprovementHistory(str(tmp_workspace / "improvements"))
@@ -229,18 +231,32 @@ class TestImprovementHistory:
 
     def test_summary_stats(self, tmp_workspace):
         history = ImprovementHistory(str(tmp_workspace / "improvements"))
-        r1 = ImprovementRecord(ImprovementProposal(id="1", title="T", description="D"), status=ImprovementStatus.SUCCESS)
-        r2 = ImprovementRecord(ImprovementProposal(id="2", title="T", description="D"), status=ImprovementStatus.FAILED)
-        r3 = ImprovementRecord(ImprovementProposal(id="3", title="T", description="D"), status=ImprovementStatus.PENDING)
+        r1 = ImprovementRecord(ImprovementProposal(id="1", title="T", description="D"))
         history.record(r1)
+        r1.status = ImprovementStatus.APPROVED
+        history.update(r1)
+        r1.status = ImprovementStatus.RUNNING
+        history.update(r1)
+        r1.status = ImprovementStatus.SUCCESS
+        history.update(r1)
+
+        r2 = ImprovementRecord(ImprovementProposal(id="2", title="T", description="D"))
         history.record(r2)
+        r2.status = ImprovementStatus.APPROVED
+        history.update(r2)
+        r2.status = ImprovementStatus.RUNNING
+        history.update(r2)
+        r2.status = ImprovementStatus.FAILED
+        history.update(r2)
+
+        r3 = ImprovementRecord(ImprovementProposal(id="3", title="T", description="D"), status=ImprovementStatus.REJECTED)
         history.record(r3)
 
         summary = history.summary()
         assert summary["total"] == 3
         assert summary["by_status"]["success"] == 1
         assert summary["by_status"]["failed"] == 1
-        assert summary["by_status"]["pending"] == 1
+        assert summary["by_status"]["rejected"] == 1
         assert summary["success_rate"] == pytest.approx(1 / 3, abs=0.01)
 
     def test_record_sets_applied_at(self, tmp_workspace):
