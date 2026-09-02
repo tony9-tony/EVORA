@@ -326,11 +326,20 @@ class KnowledgeBase:
     adding Phase 8 semantics.
     """
 
-    def __init__(self, memory_service: Any, logger: Optional[Logger] = None):
+    def __init__(
+        self,
+        memory_service: Any,
+        logger: Optional[Logger] = None,
+        identity_service: Any = None,
+    ):
         self.memory_service = memory_service
         self.logger = logger
+        self.identity_service = identity_service or getattr(memory_service, "identity_service", None)
 
     def store_knowledge(self, knowledge: Knowledge) -> str:
+        if self.identity_service is None:
+            raise PermissionError("Creator authority is required to store knowledge")
+        self.identity_service.require_authority("enable_self_modification")
         entry = self.memory_service.remember(
             content=knowledge.content,
             memory_type=knowledge.memory_type,
@@ -353,6 +362,9 @@ class KnowledgeBase:
         return [r.to_dict() for r in results]
 
     def record_feedback_on_knowledge(self, knowledge_id: str, feedback: Feedback) -> None:
+        if self.identity_service is None:
+            raise PermissionError("Creator authority is required to modify knowledge")
+        self.identity_service.require_authority("enable_self_modification")
         entry = self.memory_service.store.load_ltm_entry(knowledge_id)
         if entry is None:
             return

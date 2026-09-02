@@ -910,15 +910,18 @@ def _build_learning_engine(args) -> LearningEngine:
 
     experience_store = ExperienceStore(config.memory_dir)
     memory = Memory(config.memory_dir, project_name=project)
+    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
     memory_service = memory.get_memory_service(
-        identity_service=IdentityService(identity_dir=config.identity_dir, logger=logger),
+        identity_service=identity_service,
         logger=logger,
     )
-    knowledge_base = KnowledgeBase(memory_service=memory_service, logger=logger)
+    knowledge_base = KnowledgeBase(
+        memory_service=memory_service,
+        logger=logger,
+        identity_service=identity_service,
+    )
     lesson_extractor = LessonExtractor(logger=logger)
     approval = ApprovalSystem(logger=logger, auto_approve=getattr(args, "auto_approve", False))
-    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
-
     return LearningEngine(
         experience_store=experience_store,
         knowledge_base=knowledge_base,

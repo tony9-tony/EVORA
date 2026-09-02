@@ -62,8 +62,11 @@ def experience_store(memory_dir):
 @pytest.fixture
 def knowledge_base(memory_dir):
     memory = Memory(memory_dir, project_name="testproject")
-    memory_service = memory.get_memory_service()
-    return KnowledgeBase(memory_service=memory_service)
+    identity_store = IdentityStore(str(Path(memory_dir) / "identities"))
+    identity_store.bootstrap_creator("Creator")
+    identity_service = IdentityService(store=identity_store)
+    memory_service = memory.get_memory_service(identity_service=identity_service)
+    return KnowledgeBase(memory_service=memory_service, identity_service=identity_service)
 
 
 @pytest.fixture
@@ -75,9 +78,7 @@ def lesson_extractor():
 def learning_engine(experience_store, knowledge_base, lesson_extractor, memory_dir):
     memory = Memory(memory_dir, project_name="testproject")
     memory_service = memory.get_memory_service()
-    identity_store = IdentityStore(str(Path(memory_dir) / "identities"))
-    identity_store.bootstrap_creator("Creator")
-    identity_service = IdentityService(store=identity_store)
+    identity_service = knowledge_base.identity_service
     return LearningEngine(
         experience_store=experience_store,
         knowledge_base=knowledge_base,
@@ -402,8 +403,11 @@ class TestPhase8Integration:
 
     def test_knowledge_stored_via_memory_service(self, memory_dir):
         memory = Memory(memory_dir, project_name="proj")
-        memory_service = memory.get_memory_service()
-        kb = KnowledgeBase(memory_service=memory_service)
+        identity_store = IdentityStore(str(Path(memory_dir) / "identities"))
+        identity_store.bootstrap_creator("Creator")
+        identity_service = IdentityService(store=identity_store)
+        memory_service = memory.get_memory_service(identity_service=identity_service)
+        kb = KnowledgeBase(memory_service=memory_service, identity_service=identity_service)
         knowledge = Knowledge(
             content="Test knowledge entry",
             memory_type="learning",
@@ -416,6 +420,13 @@ class TestPhase8Integration:
         loaded = memory_service.store.load_ltm_entry(kid)
         assert loaded is not None
         assert "Test knowledge entry" in loaded.content
+
+    def test_knowledge_base_writes_require_creator_authority(self, memory_dir):
+        memory = Memory(memory_dir, project_name="proj")
+        kb = KnowledgeBase(memory_service=memory.get_memory_service())
+
+        with pytest.raises(PermissionError):
+            kb.store_knowledge(Knowledge(content="unauthorized"))
 
     def test_learning_respects_authority(self, tmp_workspace):
         store = IdentityStore(str(tmp_workspace / "id"))
