@@ -29,7 +29,7 @@ from evora.config import load_config, ProviderConfig
 from evora.identity import IdentityService, AuthorityLevel, Identity
 from evora.logger import Logger
 from evora.memory import Memory, MemoryService, LongTermMemoryEntry, MemoryFilter
-from evora.model import ModelManager, OpenAIProvider, AnthropicProvider, OllamaProvider, _has_openai, _has_anthropic, Message, Role, ChatRequest, ModelResponse
+from evora.model import ModelManager, OpenAIProvider, AnthropicProvider, OllamaProvider, _has_openai, _has_anthropic, _has_httpx, Message, Role, ChatRequest, ModelResponse, Usage
 from evora.planner import Planner
 from evora.agent import Agent, AgentConfig
 from evora.autonomous import AutonomousAgent, AutonomousConfig
@@ -471,6 +471,69 @@ def cmd_identity(args):
         print("       evora identity list")
 
 
+def cmd_status(args):
+    """Display EVORA system status and Phase 6 improvement history."""
+    config = load_config()
+    logger = Logger("evora", config.log_level, config.log_file)
+
+    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
+    memory = Memory(config.memory_dir, project_name=Path(config.workspace_dir).name)
+
+    identity = identity_service.current_identity()
+    creator = identity_service.get_creator()
+
+    has_httpx = _has_httpx
+    has_openai = _has_openai
+    has_anthropic = _has_anthropic
+
+    print(f"\n{'=' * 60}")
+    print(f"  EVORA System Status")
+    print(f"{'=' * 60}\n")
+
+    print(f"  Workspace:      {config.workspace_dir}")
+    print(f"  Python:         {sys.version.split()[0]}")
+    print(f"\n  Identity:")
+    print(f"    Current:       {identity.name}")
+    print(f"    Authority:     {identity.authority.value}")
+    print(f"    Display:       {identity.display_name or identity.name}")
+    if creator:
+        print(f"    Creator:       {creator.display_name or creator.name}")
+    else:
+        print(f"    Creator:       Not configured")
+
+    print(f"\n  Model Providers:")
+    print(f"    OpenAI:        {'Available (key set)' if has_openai and config.api_key else 'Available (no key)' if has_openai else 'Not installed'}")
+    print(f"    Anthropic:     {'Available (key set)' if has_anthropic and config.api_key else 'Available (no key)' if has_anthropic else 'Not installed'}")
+    print(f"    Ollama:        {'Available' if has_httpx else 'Not installed'}")
+    print(f"    Config model:  {config.model}")
+    print(f"    Provider:      {config.provider or 'auto-select'}")
+
+    print(f"\n  Memory:")
+    try:
+        mem_count = len(memory.get_memory_service(identity_service=identity_service, logger=logger).list_memories(limit=100))
+        print(f"    Memories:      {mem_count}")
+    except Exception as e:
+        print(f"    Memories:      Error: {e}")
+    print(f"    Directory:     {config.memory_dir}")
+
+    try:
+        from evora.self_improve import ImprovementHistory
+        history = ImprovementHistory()
+        summary = history.summary()
+        print(f"\n  Self-Improvement (Phase 6):")
+        print(f"    Total proposals: {summary['total']}")
+        print(f"    Success rate:    {summary['success_rate']:.0%}")
+        for status, count in summary["by_status"].items():
+            print(f"    {status}:          {count}")
+    except ImportError:
+        print(f"\n  Self-Improvement:  Not available")
+
+    print(f"\n  Permissions:")
+    print(f"    File write:      {config.permissions.allow_file_write}")
+    print(f"    Cmd exec:        {config.permissions.allow_cmd_exec}")
+    print(f"\n{'=' * 60}\n")
+
+
 async def async_run(args):
     """Run the EVORA autonomous agent on a task."""
     config = load_config()
@@ -499,7 +562,7 @@ async def async_run(args):
     result = analyzer.analyze()
 
     planner = Planner(manager, logger)
-    tools = ToolRegistry(security, logger)
+    tools = ToolRegistry(security, logger, identity_service=identity_service, approval_system=approval)
 
     # Phase 3: Set up identity and memory services
     identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
@@ -635,6 +698,7 @@ Examples:
     analyze_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
 
     subparsers.add_parser("config", help="Show/load configuration")
+    subparsers.add_parser("status", help="Show EVORA system status and Phase 6 info")
     memory_parser = subparsers.add_parser("memory", help="View task and project memory")
     memory_parser.add_argument("--type", type=str, default="all",
                                choices=["all", "tasks", "long-term", "ltm"],
@@ -709,6 +773,8 @@ Examples:
         cmd_whoami(args)
     elif args.command == "identity":
         cmd_identity(args)
+    elif args.command == "status":
+        cmd_status(args)
     elif args.command == "plan":
         asyncio.run(async_plan(args))
     elif args.command == "chat":

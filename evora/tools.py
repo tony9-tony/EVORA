@@ -23,6 +23,7 @@ Tools:
     analyze_code    - Analyze a source file for structure and quality
     web_search      - Search the web for information
     web_fetch       - Fetch content from a URL
+    self_improve    - Analyze and propose changes to EVORA's own codebase (CREATOR approval)
 """
 
 from __future__ import annotations
@@ -37,7 +38,25 @@ from pathlib import Path
 from typing import Any, Optional
 
 from evora.security import PermissionLevel, PermissionManager
-from evora.logger import Logger
+from evora.logger import Logger, Stage
+
+
+def _has_identity_service() -> bool:
+    """Check if IdentityService can be imported (Phase 3+)."""
+    try:
+        from evora.identity import IdentityService
+        return True
+    except ImportError:
+        return False
+
+
+def _has_self_improve() -> bool:
+    """Check if Phase 6 self-improvement module is available."""
+    try:
+        from evora.self_improve import SelfImproveTool
+        return True
+    except ImportError:
+        return False
 
 
 @dataclass
@@ -1073,9 +1092,12 @@ class RunTestsTool(Tool):
 class ToolRegistry:
     """Registry of available tools."""
 
-    def __init__(self, security: PermissionManager, logger: Optional[Logger] = None):
+    def __init__(self, security: PermissionManager, logger: Optional[Logger] = None,
+                 identity_service=None, approval_system=None):
         self.security = security
         self.logger = logger
+        self.identity_service = identity_service
+        self.approval_system = approval_system
         self._tools: dict[str, Tool] = {}
         self._register_all()
 
@@ -1099,6 +1121,15 @@ class ToolRegistry:
         self.register(WebSearchTool(self.security, self.logger))
         self.register(WebFetchTool(self.security, self.logger))
         self.register(SelfAnalyzeTool(self.security, self.logger))
+
+        if _has_self_improve():
+            from evora.self_improve import SelfImproveTool
+            self.register(SelfImproveTool(
+                security=self.security,
+                logger=self.logger,
+                identity_service=self.identity_service,
+                approval_system=self.approval_system,
+            ))
 
     def register(self, tool: Tool):
         self._tools[tool.name] = tool
