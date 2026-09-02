@@ -27,6 +27,19 @@ from evora.analyzer import ProjectAnalyzer
 from evora.approval import ApprovalSystem
 from evora.config import load_config, ProviderConfig
 from evora.identity import IdentityService, AuthorityLevel, Identity
+from evora.learning import (
+    LearningEngine,
+    ExperienceStore,
+    KnowledgeBase,
+    LessonExtractor,
+    Experience,
+    ExperienceType,
+    Lesson,
+    LessonStatus,
+    Feedback,
+    FeedbackType,
+    Knowledge,
+)
 from evora.logger import Logger
 from evora.memory import Memory, MemoryService, LongTermMemoryEntry, MemoryFilter
 from evora.model import ModelManager, OpenAIProvider, AnthropicProvider, OllamaProvider, _has_openai, _has_anthropic, _has_httpx, Message, Role, ChatRequest, ModelResponse, Usage
@@ -723,7 +736,17 @@ Examples:
   evora plan "Build a REST API with FastAPI"
   evora analyze
   evora config
-        """,
+  evora memory [--type tasks|long-term|all]
+  evora remember "Use pytest for testing" --type preference --importance 0.8
+  evora forget <memory_id>
+  evora memories "What test framework"
+  evora learn "Task succeeded with pytest" --type task_outcome
+  evora knowledge "testing patterns"
+  evora feedback <lesson_id> --type approve
+  evora learning-status
+  evora whoami
+  evora identity set --name "Alice" --authority creator
+""",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -808,6 +831,31 @@ Examples:
                                help="Authority level")
     identity_list = identity_sub.add_parser("list", help="List all known identities")
 
+    learn_parser = subparsers.add_parser("learn", help="Capture an experience and extract a lesson")
+    learn_parser.add_argument("content", type=str, help="Experience content")
+    learn_parser.add_argument("--type", type=str, default="task_outcome",
+                              choices=[t.value for t in ExperienceType],
+                              help="Experience type")
+    learn_parser.add_argument("--project", type=str, default=None, help="Project scope")
+    learn_parser.add_argument("--importance", type=float, default=0.5, help="Importance 0.0-1.0")
+    learn_parser.add_argument("--session-id", type=str, default="", help="Session ID")
+    learn_parser.add_argument("--task-id", type=str, default="", help="Task ID")
+
+    knowledge_parser = subparsers.add_parser("knowledge", help="List/search durable knowledge")
+    knowledge_parser.add_argument("query", type=str, nargs="?", default=None, help="Search query")
+    knowledge_parser.add_argument("--project", type=str, default=None, help="Project scope")
+    knowledge_parser.add_argument("--limit", type=int, default=20, help="Max results")
+
+    feedback_parser = subparsers.add_parser("feedback", help="Provide feedback on a proposed lesson")
+    feedback_parser.add_argument("lesson_id", type=str, help="Lesson ID")
+    feedback_parser.add_argument("--type", type=str, default="approve",
+                                 choices=[t.value for t in FeedbackType],
+                                 help="Feedback type")
+    feedback_parser.add_argument("--content", type=str, default="", help="Feedback text")
+
+    learning_status_parser = subparsers.add_parser("learning-status", help="Show learning evaluation metrics")
+    learning_status_parser.add_argument("--project", type=str, default=None, help="Project scope")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -843,6 +891,123 @@ Examples:
     elif args.command == "run":
         exit_code = asyncio.run(async_run(args))
         sys.exit(exit_code)
+    elif args.command == "learn":
+        exit_code = asyncio.run(async_learn(args))
+        sys.exit(exit_code)
+    elif args.command == "knowledge":
+        cmd_knowledge(args)
+    elif args.command == "feedback":
+        cmd_feedback(args)
+    elif args.command == "learning-status":
+        cmd_learning_status(args)
+
+
+def _build_learning_engine(args) -> LearningEngine:
+    config = load_config()
+    logger = Logger("evora", config.log_level, config.log_file)
+    workspace = getattr(args, "workspace", None) or config.workspace_dir
+    project = Path(workspace).name
+
+    experience_store = ExperienceStore(config.memory_dir)
+    memory = Memory(config.memory_dir, project_name=project)
+    memory_service = memory.get_memory_service(
+        identity_service=IdentityService(identity_dir=config.identity_dir, logger=logger),
+        logger=logger,
+    )
+    knowledge_base = KnowledgeBase(memory_service=memory_service, logger=logger)
+    lesson_extractor = LessonExtractor(logger=logger)
+    approval = ApprovalSystem(logger=logger, auto_approve=getattr(args, "auto_approve", False))
+    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
+
+    return LearningEngine(
+        experience_store=experience_store,
+        knowledge_base=knowledge_base,
+        lesson_extractor=lesson_extractor,
+        memory_service=memory_service,
+        approval_system=approval,
+        identity_service=identity_service,
+        logger=logger,
+    )
+
+
+async def async_learn(args):
+    engine = _build_learning_engine(args)
+    experience = Experience(
+        experience_type=ExperienceType(args.type),
+        session_id=getattr(args, "session_id", ""),
+        task_id=getattr(args, "task_id", ""),
+        project=Path(getattr(args, "workspace", None) or load_config().workspace_dir).name,
+        content=args.content,
+        importance=getattr(args, "importance", 0.5),
+    )
+    lessons = await engine.learn_from_experience(experience)
+    if not lessons:
+        print("No lessons extracted.")
+        return 0
+    for lesson in lessons:
+        print(f"Lesson: {lesson.lesson_id}")
+        print(f"  Summary: {lesson.summary}")
+        print(f"  Status: {lesson.status.value}")
+        print(f"  Confidence: {lesson.confidence:.2f}")
+        print(f"  Tags: {', '.join(lesson.tags)}")
+    return 0
+
+
+def cmd_knowledge(args):
+    engine = _build_learning_engine(args)
+    project = getattr(args, "project", None) or Path(load_config().workspace_dir).name
+    if args.query:
+        results = engine.retrieve_relevant_knowledge(goal=args.query, project=project, limit=args.limit)
+    else:
+        results = engine.retrieve_relevant_knowledge(goal="", project=project, limit=args.limit)
+    if not results:
+        print("No knowledge found.")
+        return
+    for item in results:
+        print(f"[{item.get('memory_type', 'learning')}] (score={item.get('score', 0.0):.2f}) {item.get('content', '')[:200]}")
+        print(f"  id={item.get('id', '')[:12]} project={item.get('project', 'global')}")
+        print()
+
+
+def cmd_feedback(args):
+    engine = _build_learning_engine(args)
+    feedback_type = FeedbackType(args.type)
+    feedback = Feedback(
+        lesson_id=args.lesson_id,
+        feedback_type=feedback_type,
+        content=args.content,
+        provided_by="creator",
+    )
+    success = engine.provide_feedback(args.lesson_id, feedback)
+    if not success:
+        print(f"Lesson not found: {args.lesson_id}")
+        sys.exit(1)
+    print(f"Feedback recorded: {feedback_type.value} on lesson {args.lesson_id}")
+    if feedback_type == FeedbackType.APPROVE:
+        knowledge_id = engine.integrate_lesson(args.lesson_id)
+        if knowledge_id:
+            print(f"Lesson integrated as knowledge: {knowledge_id}")
+    return 0
+
+
+def cmd_learning_status(args):
+    engine = _build_learning_engine(args)
+    project = getattr(args, "project", None) or Path(load_config().workspace_dir).name
+    metrics = engine.evaluate_learning(project=project)
+    print(f"\n{'=' * 60}")
+    print(f"  EVORA Phase 8 Learning Status")
+    print(f"{'=' * 60}\n")
+    print(f"  Experiences captured: {metrics['experiences_captured']}")
+    for t, c in metrics.get("experiences_by_type", {}).items():
+        print(f"    {t}: {c}")
+    print(f"  Pending lessons:      {metrics['pending_lessons']}")
+    print(f"  Validated lessons:    {metrics['validated_lessons']}")
+    print(f"  Integrated lessons:   {metrics['integrated_lessons']}")
+    print(f"  Rejected lessons:     {metrics['rejected_lessons']}")
+    print(f"  Knowledge entries:    {metrics['knowledge_entries']}")
+    print(f"  Knowledge success rate: {metrics['knowledge_success_rate']:.0%}")
+    print(f"  Total knowledge applications: {metrics['knowledge_total_applications']}")
+    print(f"\n{'=' * 60}\n")
 
 
 if __name__ == "__main__":
