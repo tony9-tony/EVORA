@@ -87,6 +87,11 @@ from evora.brain.intelligence.comprehension import (
     Priority,
     AmbiguityLevel,
 )
+from evora.brain.intelligence.orchestration import (
+    IntelligenceOrchestrator,
+    OrchestrationDecision,
+    ResultType,
+)
 
 __all__ = [
     "KnowledgeGraph",
@@ -152,4 +157,7 @@ __all__ = [
     "IntentType",
     "Priority",
     "AmbiguityLevel",
+    "IntelligenceOrchestrator",
+    "OrchestrationDecision",
+    "ResultType",
 ]

@@ -52,6 +52,7 @@ class IntelligenceRuntime:
         native_coding_intelligence: Any = None,
         continual_learning_pipeline: Any = None,
         native_comprehension_intelligence: Any = None,
+        intelligence_orchestrator: Any = None,
     ):
         self.native_reasoning = native_reasoning
         self.native_planner = native_planner
@@ -64,6 +65,7 @@ class IntelligenceRuntime:
         self.native_coding_intelligence = native_coding_intelligence
         self.continual_learning_pipeline = continual_learning_pipeline
         self.native_comprehension_intelligence = native_comprehension_intelligence
+        self.intelligence_orchestrator = intelligence_orchestrator
 
     async def reason(self, goal: str, context: dict[str, Any] = None) -> Any:
         """Reason using native capabilities only.
@@ -424,6 +426,25 @@ class IntelligenceRuntime:
             if self.logger:
                 self.logger.warn(f"Entity extraction failed: {e}")
             return []
+
+    def orchestrate(self, request: dict[str, Any]) -> Any:
+        """Orchestrate capability selection for a request."""
+        if self.intelligence_orchestrator is None:
+            from evora.brain.intelligence.orchestration import OrchestrationDecision, ResultType
+            return OrchestrationDecision(
+                result_type=ResultType.UNAVAILABLE,
+                reasoning="Orchestrator not configured",
+            )
+        try:
+            return self.intelligence_orchestrator.orchestrate(request)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Orchestration failed: {e}")
+            from evora.brain.intelligence.orchestration import OrchestrationDecision, ResultType
+            return OrchestrationDecision(
+                result_type=ResultType.UNAVAILABLE,
+                reasoning=f"Orchestration error: {e}",
+            )
 
     def _outcome_from_reasoning(self, result: Any) -> Any:
         """Derive outcome type from reasoning result."""
