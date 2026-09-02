@@ -92,6 +92,15 @@ from evora.brain.intelligence.orchestration import (
     OrchestrationDecision,
     ResultType,
 )
+from evora.brain.intelligence.conversation import (
+    NativeChatbot,
+    ConversationManager,
+    ConversationState,
+    ConversationTurn,
+    ChatResponse,
+    TurnRole,
+    ConversationStatus,
+)
 
 __all__ = [
     "KnowledgeGraph",
@@ -160,4 +169,11 @@ __all__ = [
     "IntelligenceOrchestrator",
     "OrchestrationDecision",
     "ResultType",
+    "NativeChatbot",
+    "ConversationManager",
+    "ConversationState",
+    "ConversationTurn",
+    "ChatResponse",
+    "TurnRole",
+    "ConversationStatus",
 ]
