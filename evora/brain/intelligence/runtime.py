@@ -42,6 +42,7 @@ class IntelligenceRuntime:
         logger: Optional[Logger] = None,
         training_pipeline: Any = None,
         native_coding_intelligence: Any = None,
+        continual_learning_pipeline: Any = None,
     ):
         self.native_reasoning = native_reasoning
         self.native_planner = native_planner
@@ -52,6 +53,7 @@ class IntelligenceRuntime:
         self.logger = logger
         self.training_pipeline = training_pipeline
         self.native_coding_intelligence = native_coding_intelligence
+        self.continual_learning_pipeline = continual_learning_pipeline
 
     async def reason(self, goal: str, context: dict[str, Any] = None) -> Any:
         """Reason using native capabilities only.
@@ -330,6 +332,51 @@ class IntelligenceRuntime:
                 self.logger.warn(f"Patch evaluation failed: {e}")
             from evora.brain.intelligence.coding import PatchEvaluation
             return PatchEvaluation(confidence=0.0, reasoning=f"Error: {e}")
+
+    def process_continual_experience(self, experience_data: dict[str, Any]) -> dict[str, Any]:
+        """Process an experience through continual learning."""
+        if self.continual_learning_pipeline is None:
+            return {"status": "skipped", "reason": "Continual learning not configured"}
+        try:
+            return self.continual_learning_pipeline.process_experience(experience_data)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Continual learning failed: {e}")
+            return {"status": "error", "reason": str(e)}
+
+    def replay_experiences(self, component: str = "", limit: int = 20) -> dict[str, Any]:
+        """Replay experiences for continual learning."""
+        if self.continual_learning_pipeline is None:
+            return {"replayed": 0, "lessons_extracted": 0}
+        try:
+            return self.continual_learning_pipeline.replay_and_learn(component=component, limit=limit)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Experience replay failed: {e}")
+            return {"replayed": 0, "lessons_extracted": 0}
+
+    def consolidate_knowledge(self) -> dict[str, Any]:
+        """Consolidate knowledge and prune low-value entries."""
+        if self.continual_learning_pipeline is None:
+            return {"status": "skipped"}
+        try:
+            result = self.continual_learning_pipeline.consolidate_knowledge()
+            return result.to_dict()
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Knowledge consolidation failed: {e}")
+            return {"status": "error", "reason": str(e)}
+
+    def get_continual_metrics(self) -> dict[str, Any]:
+        """Get continual learning metrics."""
+        if self.continual_learning_pipeline is None:
+            return {}
+        try:
+            return self.continual_learning_pipeline.get_continual_metrics()
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Failed to get continual metrics: {e}")
+            return {}
 
     def _outcome_from_reasoning(self, result: Any) -> Any:
         """Derive outcome type from reasoning result."""

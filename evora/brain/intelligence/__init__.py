@@ -63,6 +63,16 @@ from evora.brain.intelligence.coding import (
     ClassInfo,
     ImportInfo,
 )
+from evora.brain.intelligence.continual import (
+    ContinualLearningPipeline,
+    ExperienceReplayBuffer,
+    ConsolidationStrategy,
+    ValidationResult,
+    ConsolidationResult,
+    PoisoningDetector,
+    LessonConsolidator,
+    KnowledgeConsolidator,
+)
 
 __all__ = [
     "KnowledgeGraph",
@@ -108,4 +118,12 @@ __all__ = [
     "FunctionInfo",
     "ClassInfo",
     "ImportInfo",
+    "ContinualLearningPipeline",
+    "ExperienceReplayBuffer",
+    "ConsolidationStrategy",
+    "ValidationResult",
+    "ConsolidationResult",
+    "PoisoningDetector",
+    "LessonConsolidator",
+    "KnowledgeConsolidator",
 ]
