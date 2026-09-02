@@ -11,6 +11,11 @@ from evora.brain.intelligence.knowledge import (
     KnowledgeType,
     RelationType,
 )
+from evora.brain.intelligence.capabilities import (
+    CapabilityRegistry,
+    CapabilityType,
+    IntelligenceCapability,
+)
 
 __all__ = [
     "KnowledgeGraph",
@@ -18,4 +23,7 @@ __all__ = [
     "KnowledgeEdge",
     "KnowledgeType",
     "RelationType",
+    "CapabilityRegistry",
+    "CapabilityType",
+    "IntelligenceCapability",
 ]
