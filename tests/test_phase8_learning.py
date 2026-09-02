@@ -357,7 +357,8 @@ class TestKnowledgeRetrieval:
             learning_engine.provide_feedback(lessons[0].lesson_id, feedback)
             learning_engine.integrate_lesson(lessons[0].lesson_id)
         results = learning_engine.retrieve_relevant_knowledge(goal="pytest testing", project="testproject", limit=5)
-        assert len(results) >= 0  # may be 0 if memory service integration differs
+        assert len(results) >= 1
+        assert any("pytest" in r.get("content", "").lower() for r in results)
 
     def test_retrieve_empty_knowledge(self, learning_engine):
         results = learning_engine.retrieve_relevant_knowledge(goal="nonexistent", project="testproject")

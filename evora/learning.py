@@ -26,7 +26,6 @@ Reuses existing abstractions:
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -558,6 +557,8 @@ class LearningEngine:
 
         lessons = await self.lesson_extractor.extract_with_reasoning(experience, {})
         for lesson in lessons:
+            if experience.project:
+                lesson.metadata.setdefault("project", experience.project)
             self._pending_lessons[lesson.lesson_id] = lesson
             if self.logger:
                 self.logger.memory(f"Lesson proposed: {lesson.summary[:80]} (confidence={lesson.confidence:.2f})")
@@ -632,38 +633,6 @@ class LearningEngine:
         if self.logger:
             self.logger.memory(f"Lesson {lesson_id} integrated as knowledge {knowledge_id}")
         return knowledge_id
-
-    def request_creator_feedback(self, lesson: Lesson) -> Optional[Feedback]:
-        """Request creator approval for a proposed lesson."""
-        if self.approval_system is None:
-            return None
-
-        prompt = (
-            f"Learning Feedback Request\n"
-            f"{'=' * 50}\n"
-            f"Lesson: {lesson.summary}\n"
-            f"Detail: {lesson.detail}\n"
-            f"Confidence: {lesson.confidence:.2f}\n"
-            f"Tags: {', '.join(lesson.tags)}\n"
-            f"\nShould this lesson become durable knowledge?\n"
-            f"Options: Approve, Reject, Modify, Cancel"
-        )
-
-        try:
-            decision = self.approval_system.approve_plan(prompt, lesson.to_dict())
-            approved = decision.value in ("approve", "approved")
-            feedback = Feedback(
-                lesson_id=lesson.lesson_id,
-                feedback_type=FeedbackType.APPROVE if approved else FeedbackType.REJECT,
-                content=f"Creator {decision.value} via approval system",
-                provided_by="creator",
-            )
-            self.provide_feedback(lesson.lesson_id, feedback)
-            return feedback
-        except Exception as e:
-            if self.logger:
-                self.logger.warn(f"Feedback request failed: {e}")
-            return None
 
     def retrieve_relevant_knowledge(self, goal: str, project: str = "", limit: int = 10) -> list[dict]:
         """Retrieve knowledge relevant to a goal."""
