@@ -1,5 +1,5 @@
 """
-Phase 9 — EVORA Brain package.
+Phase 9+10 — EVORA Brain package.
 
 Provides the standalone Brain architecture:
   - BrainController: central orchestration (thin layer)
@@ -7,6 +7,7 @@ Provides the standalone Brain architecture:
   - ContextBuilder: bounded context construction
   - SelfModel: observable-based self-understanding
   - ResourceMonitor: safe resource awareness
+  - Intelligence: native intelligence layer (Phase 10)
 """
 
 from evora.brain.brain import BrainController, BrainResponse
