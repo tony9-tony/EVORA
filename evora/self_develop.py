@@ -32,7 +32,7 @@ from evora.reasoning import ReasoningEngine, ReasoningContext
 from evora.inspector import DevelopmentInspector, InspectionReport
 from evora.discovery import ImprovementDiscovery, ImprovementCandidate
 from evora.dev_planner import DevelopmentPlanner, DevelopmentPlan
-from evora.self_improve import SelfImproveTool, ImprovementHistory, ImprovementStatus
+from evora.self_improve import SelfImproveTool, ImprovementHistory, ImprovementStatus, ImprovementRecord
 
 
 class DevStatus(str, Enum):
@@ -325,14 +325,44 @@ class SelfDevelopmentSession:
         if self.logger:
             self.logger.code(f"Implementing: {candidate.title}")
 
+        if self.identity_service:
+            try:
+                self.identity_service.require_authority("enable_self_modification")
+            except PermissionError as e:
+                return {"success": False, "error": f"[DENIED] {e}", "results": []}
+
         results = []
         for step in plan.steps:
             if step.action_type == "read_file":
                 continue
+
+            if step.action_type in ("edit_file", "write_file"):
+                file_path = step.action_args.get("path", "")
+                if file_path and self.self_improve and hasattr(self.self_improve, "validator"):
+                    if self.self_improve.validator.is_critical_control_file(file_path):
+                        return {
+                            "success": False,
+                            "error": f"Refusing to modify critical control file: {file_path}",
+                            "results": results,
+                        }
+
             result = await self.tools.execute(step.action_type, **step.action_args)
             results.append({"step": step.name, "success": result.success, "output": result.output, "error": result.error})
             if not result.success:
                 return {"success": False, "error": f"Step failed: {step.name} - {result.error}", "results": results}
+
+        if self.self_improve and hasattr(self.self_improve, "history") and candidate:
+            try:
+                proposal = candidate.to_proposal()
+                record = ImprovementRecord(
+                    proposal=proposal,
+                    status=ImprovementStatus.RUNNING,
+                )
+                self.self_improve.history.record(record)
+                record.status = ImprovementStatus.SUCCESS
+                self.self_improve.history.update(record)
+            except Exception:
+                pass
 
         self._record.implementation_result = {"success": True, "results": results}
         return {"success": True, "results": results}
