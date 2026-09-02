@@ -107,6 +107,20 @@ class TestExperienceCapture:
         assert loaded.content == "Task completed successfully"
         assert loaded.experience_type == ExperienceType.TASK_OUTCOME
 
+    def test_record_rejects_path_traversal(self, experience_store, tmp_workspace):
+        with pytest.raises(ValueError):
+            experience_store.record(Experience(experience_id="../escaped", content="safe"))
+        assert not (tmp_workspace / "escaped.json").exists()
+
+    def test_record_sanitizes_metadata_secrets(self, experience_store):
+        exp = Experience(
+            content="safe",
+            metadata={"api_key": "sk-abc123def456ghi789jkl012mno345pqr678"},
+        )
+        experience_store.record(exp)
+        loaded = experience_store.get(exp.experience_id)
+        assert loaded.metadata["api_key"] == "[REDACTED]"
+
     def test_list_recent_experiences(self, experience_store):
         for i in range(5):
             experience_store.record(Experience(
@@ -429,3 +443,12 @@ class TestPhase8Integration:
             content="Unauthorized capture",
         ))
         assert result == ""
+
+    def test_capture_requires_identity_service(self, experience_store, knowledge_base):
+        engine = LearningEngine(
+            experience_store=experience_store,
+            knowledge_base=knowledge_base,
+            lesson_extractor=LessonExtractor(),
+            identity_service=None,
+        )
+        assert engine.capture_experience(Experience(content="should be denied")) == ""

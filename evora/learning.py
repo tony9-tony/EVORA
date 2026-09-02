@@ -249,6 +249,8 @@ class ExperienceStore:
     Retention policy: experiences older than retention_days are purged.
     Not intended as long-term durable storage.
     """
+    MAX_CONTENT_LENGTH = 1_048_576
+    MAX_METADATA_LENGTH = 262_144
 
     def __init__(self, data_dir: str, retention_days: int = 30):
         self.data_dir = Path(data_dir)
@@ -257,12 +259,25 @@ class ExperienceStore:
         self.retention_days = retention_days
 
     def _path(self, experience_id: str) -> Path:
-        return self.experiences_dir / f"{experience_id}.json"
+        if not isinstance(experience_id, str) or not experience_id:
+            raise ValueError("experience_id must be a non-empty string")
+        path = (self.experiences_dir / f"{experience_id}.json").resolve()
+        if path.parent != self.experiences_dir.resolve():
+            raise ValueError("experience_id must not escape the experience store")
+        return path
 
     def record(self, experience: Experience) -> str:
+        if not isinstance(experience.content, str) or len(experience.content) > self.MAX_CONTENT_LENGTH:
+            raise ValueError("experience content exceeds the maximum size")
+        metadata_size = len(json.dumps(experience.metadata, ensure_ascii=False))
+        if metadata_size > self.MAX_METADATA_LENGTH:
+            raise ValueError("experience metadata exceeds the maximum size")
         path = self._path(experience.experience_id)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(experience.to_dict(), f, indent=2, ensure_ascii=False)
+            data = experience.to_dict()
+            data["content"] = MemoryFilter.sanitize(experience.content)
+            data["metadata"] = MemoryFilter.sanitize_dict(experience.metadata)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         return experience.experience_id
 
     def get(self, experience_id: str) -> Optional[Experience]:
@@ -517,13 +532,14 @@ class LearningEngine:
 
     def capture_experience(self, experience: Experience) -> str:
         """Record a raw experience for later learning."""
-        if self.identity_service:
-            try:
-                self.identity_service.require_authority("remember")
-            except PermissionError:
-                if self.logger:
-                    self.logger.warn("Experience capture denied: insufficient authority")
-                return ""
+        if self.identity_service is None:
+            return ""
+        try:
+            self.identity_service.require_authority("remember")
+        except PermissionError:
+            if self.logger:
+                self.logger.warn("Experience capture denied: insufficient authority")
+            return ""
 
         sanitized_content = MemoryFilter.sanitize(experience.content)
         if sanitized_content != experience.content:
