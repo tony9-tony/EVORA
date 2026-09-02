@@ -240,6 +240,32 @@ class TestFeedbackHandling:
         assert learning_engine.provide_feedback(lesson.lesson_id, feedback) is True
         assert lesson.confidence < original_confidence
 
+    def test_feedback_requires_authenticated_creator(self, learning_engine):
+        lesson = Lesson(summary="proposed", detail="detail", status=LessonStatus.PROPOSED)
+        learning_engine._pending_lessons[lesson.lesson_id] = lesson
+        learning_engine.identity_service = None
+
+        feedback = Feedback(
+            lesson_id=lesson.lesson_id,
+            feedback_type=FeedbackType.APPROVE,
+            provided_by="creator",
+        )
+
+        assert learning_engine.provide_feedback(lesson.lesson_id, feedback) is False
+        assert lesson.status is LessonStatus.PROPOSED
+
+    def test_feedback_cannot_target_a_different_lesson(self, learning_engine):
+        lesson = Lesson(summary="proposed", detail="detail", status=LessonStatus.PROPOSED)
+        learning_engine._pending_lessons[lesson.lesson_id] = lesson
+        feedback = Feedback(
+            lesson_id="different-lesson",
+            feedback_type=FeedbackType.APPROVE,
+            provided_by="creator",
+        )
+
+        assert learning_engine.provide_feedback(lesson.lesson_id, feedback) is False
+        assert lesson.status is LessonStatus.PROPOSED
+
     def test_feedback_on_unknown_lesson_returns_false(self, learning_engine):
         feedback = Feedback(lesson_id="unknown", feedback_type=FeedbackType.APPROVE)
         assert learning_engine.provide_feedback("unknown", feedback) is False
@@ -279,6 +305,13 @@ class TestKnowledgeFormation:
         learning_engine.provide_feedback(lesson.lesson_id, feedback)
         kid = learning_engine.integrate_lesson(lesson.lesson_id)
         assert kid is None
+
+    def test_integration_requires_authenticated_creator(self, learning_engine):
+        lesson = Lesson(summary="validated", detail="detail", status=LessonStatus.VALIDATED)
+        learning_engine._pending_lessons[lesson.lesson_id] = lesson
+        learning_engine.identity_service = None
+
+        assert learning_engine.integrate_lesson(lesson.lesson_id) is None
 
     def test_knowledge_application_tracking(self):
         knowledge = Knowledge(
