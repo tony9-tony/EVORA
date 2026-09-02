@@ -120,6 +120,54 @@ class CapabilityRegistry:
             fallback_available=True,
             limitations=["No deep semantic understanding", "Limited to syntactic patterns"],
         ))
+        self.register(IntelligenceCapability(
+            name="python_code_understanding",
+            description="Parse Python source files using AST for functions, classes, imports",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.8,
+            fallback_available=False,
+            limitations=["Python only", "No runtime analysis"],
+        ))
+        self.register(IntelligenceCapability(
+            name="bug_detection",
+            description="Detect common bugs using AST pattern matching",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.6,
+            fallback_available=True,
+            limitations=["Python only", "Limited to known patterns"],
+        ))
+        self.register(IntelligenceCapability(
+            name="simple_code_generation",
+            description="Generate simple code stubs from specifications",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.5,
+            fallback_available=True,
+            limitations=["Simple patterns only", "No complex algorithms"],
+        ))
+        self.register(IntelligenceCapability(
+            name="code_explanation",
+            description="Explain code structure and complexity",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.7,
+            fallback_available=True,
+            limitations=["Structural only", "No semantic understanding"],
+        ))
+        self.register(IntelligenceCapability(
+            name="test_generation",
+            description="Generate basic test stubs from code structure",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.5,
+            fallback_available=True,
+            limitations=["Basic tests only", "No edge case generation"],
+        ))
+        self.register(IntelligenceCapability(
+            name="patch_evaluation",
+            description="Evaluate code patches for safety and affected scope",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.7,
+            fallback_available=True,
+            limitations=["Structural analysis only", "No semantic correctness check"],
+        ))
 
         # Model-enhanced capabilities
         self.register(IntelligenceCapability(

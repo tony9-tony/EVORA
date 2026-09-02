@@ -9,6 +9,7 @@ Coordinates native intelligence capabilities:
   - IntelligenceEvaluator
   - CapabilityRegistry
   - TrainingPipeline (Phase 11)
+  - NativeCodingIntelligence (Phase 12)
 
 NO ModelManager dependency.
 NO external model dependency.
@@ -40,6 +41,7 @@ class IntelligenceRuntime:
         capability_registry: Any,
         logger: Optional[Logger] = None,
         training_pipeline: Any = None,
+        native_coding_intelligence: Any = None,
     ):
         self.native_reasoning = native_reasoning
         self.native_planner = native_planner
@@ -49,6 +51,7 @@ class IntelligenceRuntime:
         self.capability_registry = capability_registry
         self.logger = logger
         self.training_pipeline = training_pipeline
+        self.native_coding_intelligence = native_coding_intelligence
 
     async def reason(self, goal: str, context: dict[str, Any] = None) -> Any:
         """Reason using native capabilities only.
@@ -255,6 +258,78 @@ class IntelligenceRuntime:
             return self.knowledge_graph.add_node(node)
         except Exception:
             return ""
+
+    def understand_file(self, path: str) -> dict[str, Any]:
+        """Understand a source file structure."""
+        if self.native_coding_intelligence is None:
+            return {"error": "Coding intelligence not configured"}
+        try:
+            return self.native_coding_intelligence.understand_file(path)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Code understanding failed: {e}")
+            return {"error": str(e)}
+
+    def detect_bugs(self, path: str) -> list[Any]:
+        """Detect bugs in a source file."""
+        if self.native_coding_intelligence is None:
+            return []
+        try:
+            return self.native_coding_intelligence.detect_bugs(path)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Bug detection failed: {e}")
+            return []
+
+    def generate_code(self, spec: dict[str, Any]) -> str:
+        """Generate code from specification."""
+        if self.native_coding_intelligence is None:
+            return ""
+        try:
+            return self.native_coding_intelligence.generate_code(spec)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Code generation failed: {e}")
+            return ""
+
+    def explain_code(self, path: str) -> Any:
+        """Explain code structure."""
+        if self.native_coding_intelligence is None:
+            from evora.brain.intelligence.coding import CodeExplanation
+            return CodeExplanation(summary="Coding intelligence not configured")
+        try:
+            return self.native_coding_intelligence.explain_code(path)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Code explanation failed: {e}")
+            from evora.brain.intelligence.coding import CodeExplanation
+            return CodeExplanation(summary=f"Error: {e}")
+
+    def generate_test(self, spec: dict[str, Any]) -> Any:
+        """Generate test cases."""
+        if self.native_coding_intelligence is None:
+            from evora.brain.intelligence.coding import GeneratedTest
+            return GeneratedTest(test_code="# Coding intelligence not configured")
+        try:
+            return self.native_coding_intelligence.generate_test(spec)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Test generation failed: {e}")
+            from evora.brain.intelligence.coding import GeneratedTest
+            return GeneratedTest(test_code=f"# Error: {e}")
+
+    def evaluate_patch(self, original: str, patched: str) -> Any:
+        """Evaluate a patch."""
+        if self.native_coding_intelligence is None:
+            from evora.brain.intelligence.coding import PatchEvaluation
+            return PatchEvaluation(confidence=0.0, reasoning="Coding intelligence not configured")
+        try:
+            return self.native_coding_intelligence.evaluate_patch(original, patched)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Patch evaluation failed: {e}")
+            from evora.brain.intelligence.coding import PatchEvaluation
+            return PatchEvaluation(confidence=0.0, reasoning=f"Error: {e}")
 
     def _outcome_from_reasoning(self, result: Any) -> Any:
         """Derive outcome type from reasoning result."""

@@ -49,6 +49,20 @@ from evora.brain.intelligence.training import (
     ProvenanceTracker,
     ProvenanceRecord,
 )
+from evora.brain.intelligence.coding import (
+    NativeCodingIntelligence,
+    CodeUnderstanding,
+    BugDetector,
+    CodeGenerator,
+    PatchEvaluator,
+    CodeExplanation,
+    GeneratedTest,
+    PatchEvaluation,
+    BugPattern,
+    FunctionInfo,
+    ClassInfo,
+    ImportInfo,
+)
 
 __all__ = [
     "KnowledgeGraph",
@@ -82,4 +96,16 @@ __all__ = [
     "TrainingExampleStatus",
     "ProvenanceTracker",
     "ProvenanceRecord",
+    "NativeCodingIntelligence",
+    "CodeUnderstanding",
+    "BugDetector",
+    "CodeGenerator",
+    "PatchEvaluator",
+    "CodeExplanation",
+    "GeneratedTest",
+    "PatchEvaluation",
+    "BugPattern",
+    "FunctionInfo",
+    "ClassInfo",
+    "ImportInfo",
 ]
