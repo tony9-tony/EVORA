@@ -534,6 +534,57 @@ def cmd_status(args):
     print(f"\n{'=' * 60}\n")
 
 
+async def async_self_develop(args):
+    """Run the EVORA autonomous development session."""
+    config = load_config()
+    logger = Logger("evora", config.log_level, config.log_file)
+    workspace = args.workspace or config.workspace_dir
+
+    security = PermissionManager(
+        workspace_dir=workspace,
+        allow_file_write=config.permissions.allow_file_write,
+        allow_cmd_exec=config.permissions.allow_cmd_exec,
+        allowed_cmds=config.permissions.allowed_cmds,
+        ask_approvals=not args.auto_approve,
+    )
+
+    manager = _build_model_manager(config, logger, provider_override=getattr(args, "provider", None))
+    memory = Memory(config.memory_dir, project_name=Path(workspace).name)
+    analyzer = ProjectAnalyzer(workspace, logger)
+
+    approval = ApprovalSystem(
+        logger=logger,
+        auto_approve=args.auto_approve,
+    )
+    security.add_approval_callback(approval.approve_command)
+
+    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
+
+    from evora.self_develop import SelfDevelopmentSession
+    session = SelfDevelopmentSession(
+        workspace_dir=workspace,
+        model_manager=manager,
+        security=security,
+        identity_service=identity_service,
+        approval=approval,
+        tools=ToolRegistry(security, logger, identity_service=identity_service, approval_system=approval),
+        memory=memory,
+        logger=logger,
+        analyzer=analyzer,
+    )
+
+    try:
+        result = await session.run(args.objective, max_candidates=getattr(args, "max_candidates", 3))
+        print(result)
+        return 0
+    except Exception as e:
+        logger.error(f"Self-development session failed: {e}")
+        print(f"\n[EVORA] Self-development failed: {e}")
+        return 1
+    finally:
+        manager.close()
+
+
 async def async_run(args):
     """Run the EVORA autonomous agent on a task."""
     config = load_config()
@@ -699,6 +750,12 @@ Examples:
 
     subparsers.add_parser("config", help="Show/load configuration")
     subparsers.add_parser("status", help="Show EVORA system status and Phase 6 info")
+    self_develop_parser = subparsers.add_parser("self-develop", help="Run autonomous development session")
+    self_develop_parser.add_argument("objective", type=str, help="Development objective")
+    self_develop_parser.add_argument("--max-candidates", type=int, default=3, help="Max improvement candidates")
+    self_develop_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
+    self_develop_parser.add_argument("--provider", type=str, default=None, help="Model provider")
+    self_develop_parser.add_argument("--auto-approve", action="store_true", help="Auto-approve changes (use with caution)")
     memory_parser = subparsers.add_parser("memory", help="View task and project memory")
     memory_parser.add_argument("--type", type=str, default="all",
                                choices=["all", "tasks", "long-term", "ltm"],
@@ -775,6 +832,9 @@ Examples:
         cmd_identity(args)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "self-develop":
+        exit_code = asyncio.run(async_self_develop(args))
+        sys.exit(exit_code)
     elif args.command == "plan":
         asyncio.run(async_plan(args))
     elif args.command == "chat":
