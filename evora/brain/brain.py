@@ -79,6 +79,7 @@ class BrainController:
         experience_store: Any = None,
         approval_system: Any = None,
         identity_service: Any = None,
+        intelligence_runtime: Any = None,
         logger: Optional[Logger] = None,
     ):
         self.brain_state = brain_state or BrainState()
@@ -103,6 +104,7 @@ class BrainController:
         self.experience_store = experience_store
         self.approval_system = approval_system
         self.identity_service = identity_service
+        self.intelligence_runtime = intelligence_runtime
         self.logger = logger
 
     def get_state(self) -> BrainState:
@@ -124,8 +126,9 @@ class BrainController:
     async def reason(self, goal: str, context: Optional[BrainContext] = None) -> BrainResponse:
         """Reason about a goal using available context.
 
-        Returns a BrainResponse. If no model provider is available,
-        returns a response with confidence=0.0 and an explanatory summary.
+        Prefers native intelligence runtime when available.
+        Falls back to external model provider.
+        Returns a BrainResponse with confidence and summary.
         """
         if context is None:
             context = self.build_context(goal=goal)
@@ -135,7 +138,22 @@ class BrainController:
         confidence = 0.0
         suggested_tools: list[dict[str, Any]] = []
 
-        if self.reasoning_engine is not None and self.model_manager is not None and self.model_manager.active:
+        # Try native intelligence first
+        if self.intelligence_runtime is not None:
+            try:
+                native_result = await self.intelligence_runtime.reason(goal, {})
+                if native_result and getattr(native_result, "confidence", 0.0) > 0.3:
+                    summary = getattr(native_result, "reasoning_summary", "")
+                    reasoning = getattr(native_result, "decision", "")
+                    confidence = getattr(native_result, "confidence", 0.0)
+                    if self.logger:
+                        self.logger.observe(f"Native reasoning: confidence={confidence:.2f}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warn(f"Native reasoning failed: {e}")
+
+        # Fallback to external model provider
+        if not summary and self.reasoning_engine is not None and self.model_manager is not None and self.model_manager.active:
             try:
                 from evora.reasoning import ReasoningContext
                 ctx = ReasoningContext(
@@ -152,8 +170,9 @@ class BrainController:
                     self.logger.warn(f"Brain reasoning failed: {e}")
                 summary = f"Reasoning unavailable: {e}"
                 confidence = 0.0
-        else:
-            summary = f"No model provider available for reasoning about: {goal}"
+
+        if not summary:
+            summary = f"No reasoning available for: {goal}"
             confidence = 0.0
 
         if self.tool_registry is not None:
@@ -182,7 +201,24 @@ class BrainController:
         )
 
     async def plan(self, goal: str, project: str = "") -> Optional[dict[str, Any]]:
-        """Create a plan for a goal using the existing Planner."""
+        """Create a plan for a goal.
+
+        Prefers native intelligence runtime when available.
+        Falls back to external model provider.
+        """
+        # Try native intelligence first
+        if self.intelligence_runtime is not None:
+            try:
+                native_plan = await self.intelligence_runtime.plan(goal, [])
+                if native_plan is not None and getattr(native_plan, "confidence", 0.0) > 0.3:
+                    self.brain_state.set_plan(native_plan.to_dict())
+                    self.brain_state.set_development_state(DevelopmentState.PLANNING)
+                    return native_plan.to_dict()
+            except Exception as e:
+                if self.logger:
+                    self.logger.warn(f"Native planning failed: {e}")
+
+        # Fallback to external model provider
         if self.planner is None or self.model_manager is None or not self.model_manager.active:
             if self.logger:
                 self.logger.warn("Cannot plan: no planner or no active model provider")
