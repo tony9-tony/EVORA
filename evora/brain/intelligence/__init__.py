@@ -73,6 +73,20 @@ from evora.brain.intelligence.continual import (
     LessonConsolidator,
     KnowledgeConsolidator,
 )
+from evora.brain.intelligence.comprehension import (
+    NativeComprehensionIntelligence,
+    IntentClassifier,
+    EntityExtractor,
+    ContextBuilder,
+    RequestComprehender,
+    NaturalRequest,
+    Intent,
+    Entity,
+    Context,
+    IntentType,
+    Priority,
+    AmbiguityLevel,
+)
 
 __all__ = [
     "KnowledgeGraph",
@@ -126,4 +140,16 @@ __all__ = [
     "PoisoningDetector",
     "LessonConsolidator",
     "KnowledgeConsolidator",
+    "NativeComprehensionIntelligence",
+    "IntentClassifier",
+    "EntityExtractor",
+    "ContextBuilder",
+    "RequestComprehender",
+    "NaturalRequest",
+    "Intent",
+    "Entity",
+    "Context",
+    "IntentType",
+    "Priority",
+    "AmbiguityLevel",
 ]

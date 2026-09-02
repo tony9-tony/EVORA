@@ -168,6 +168,38 @@ class CapabilityRegistry:
             fallback_available=True,
             limitations=["Structural analysis only", "No semantic correctness check"],
         ))
+        self.register(IntelligenceCapability(
+            name="intent_classification",
+            description="Classify user intent from natural language",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.7,
+            fallback_available=True,
+            limitations=["Keyword-based", "No deep semantic understanding"],
+        ))
+        self.register(IntelligenceCapability(
+            name="entity_extraction",
+            description="Extract entities (files, functions, paths) from text",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.6,
+            fallback_available=True,
+            limitations=["Regex-based", "Limited entity types"],
+        ))
+        self.register(IntelligenceCapability(
+            name="context_building",
+            description="Build conversation and project context",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.7,
+            fallback_available=True,
+            limitations=["Depends on memory quality"],
+        ))
+        self.register(IntelligenceCapability(
+            name="ambiguity_detection",
+            description="Detect ambiguity in user inputs",
+            capability_type=CapabilityType.NATIVE,
+            native_confidence=0.6,
+            fallback_available=True,
+            limitations=["Heuristic-based"],
+        ))
 
         # Model-enhanced capabilities
         self.register(IntelligenceCapability(

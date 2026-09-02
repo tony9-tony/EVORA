@@ -10,6 +10,8 @@ Coordinates native intelligence capabilities:
   - CapabilityRegistry
   - TrainingPipeline (Phase 11)
   - NativeCodingIntelligence (Phase 12)
+  - ContinualLearningPipeline (Phase 13)
+  - NativeComprehensionIntelligence (Phase 14)
 
 NO ModelManager dependency.
 NO external model dependency.
@@ -21,6 +23,12 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from evora.logger import Logger
+
+try:
+    from evora.brain.intelligence.comprehension import IntentType
+except ImportError:
+    class IntentType:  # type: ignore
+        UNKNOWN = "unknown"
 
 
 class IntelligenceRuntime:
@@ -43,6 +51,7 @@ class IntelligenceRuntime:
         training_pipeline: Any = None,
         native_coding_intelligence: Any = None,
         continual_learning_pipeline: Any = None,
+        native_comprehension_intelligence: Any = None,
     ):
         self.native_reasoning = native_reasoning
         self.native_planner = native_planner
@@ -54,6 +63,7 @@ class IntelligenceRuntime:
         self.training_pipeline = training_pipeline
         self.native_coding_intelligence = native_coding_intelligence
         self.continual_learning_pipeline = continual_learning_pipeline
+        self.native_comprehension_intelligence = native_comprehension_intelligence
 
     async def reason(self, goal: str, context: dict[str, Any] = None) -> Any:
         """Reason using native capabilities only.
@@ -377,6 +387,43 @@ class IntelligenceRuntime:
             if self.logger:
                 self.logger.warn(f"Failed to get continual metrics: {e}")
             return {}
+
+    def comprehend_request(self, text: str, conversation_history: list[dict[str, Any]] = None, project: str = "") -> Any:
+        """Comprehend a natural request."""
+        if self.native_comprehension_intelligence is None:
+            from evora.brain.intelligence.comprehension import NaturalRequest
+            return NaturalRequest(raw_input=text, goal=text)
+        try:
+            return self.native_comprehension_intelligence.comprehend(text, conversation_history, project)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Request comprehension failed: {e}")
+            from evora.brain.intelligence.comprehension import NaturalRequest
+            return NaturalRequest(raw_input=text, goal=text)
+
+    def classify_intent(self, text: str) -> Any:
+        """Classify intent from text."""
+        if self.native_comprehension_intelligence is None:
+            from evora.brain.intelligence.comprehension import Intent
+            return Intent(intent_type=IntentType.UNKNOWN, confidence=0.0)
+        try:
+            return self.native_comprehension_intelligence.classify_intent(text)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Intent classification failed: {e}")
+            from evora.brain.intelligence.comprehension import Intent, IntentType
+            return Intent(intent_type=IntentType.UNKNOWN, confidence=0.0)
+
+    def extract_entities(self, text: str) -> list[Any]:
+        """Extract entities from text."""
+        if self.native_comprehension_intelligence is None:
+            return []
+        try:
+            return self.native_comprehension_intelligence.extract_entities(text)
+        except Exception as e:
+            if self.logger:
+                self.logger.warn(f"Entity extraction failed: {e}")
+            return []
 
     def _outcome_from_reasoning(self, result: Any) -> Any:
         """Derive outcome type from reasoning result."""
