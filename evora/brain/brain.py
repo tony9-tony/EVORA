@@ -258,9 +258,10 @@ class BrainController:
 
     async def capture_experience(self, experience: Any) -> str:
         """Capture an experience via the experience store if available."""
-        if self.experience_store is None:
+        if self.experience_store is None or self.identity_service is None:
             return ""
         try:
+            self.identity_service.require_authority("remember")
             sanitized = copy.deepcopy(experience)
             if hasattr(sanitized, "content") and isinstance(sanitized.content, str):
                 from evora.memory import MemoryFilter

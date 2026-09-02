@@ -44,6 +44,7 @@ from evora.brain import (
 from evora.identity import Identity, IdentityStore, IdentityService, AuthorityLevel
 from evora.logger import Logger
 from evora.memory import Memory, MemoryService, MemoryFilter
+from evora.learning import Experience, ExperienceStore, ExperienceType
 from evora.model import ModelManager, ModelProvider, ChatRequest, Message, Role, ModelResponse
 from evora.security import PermissionManager
 from evora.tools import ToolRegistry
@@ -343,6 +344,34 @@ class TestBrainController:
         brain = BrainController()
         result = asyncio.run(brain.capture_experience(MagicMock()))
         assert result == ""
+
+    def test_brain_capture_experience_requires_authority(self, tmp_workspace):
+        store = IdentityStore(str(tmp_workspace / "id"))
+        store.bootstrap_creator("Creator")
+        store.set_current(Identity.create(name="Guest", authority=AuthorityLevel.GUEST))
+        experience_store = ExperienceStore(str(tmp_workspace / "memory"))
+        brain = BrainController(
+            experience_store=experience_store,
+            identity_service=IdentityService(store=store),
+        )
+
+        result = asyncio.run(brain.capture_experience(
+            Experience(content="unauthorized", experience_type=ExperienceType.TASK_OUTCOME)
+        ))
+
+        assert result == ""
+        assert experience_store.count() == 0
+
+    def test_brain_capture_experience_requires_identity(self, tmp_workspace):
+        experience_store = ExperienceStore(str(tmp_workspace / "memory"))
+        brain = BrainController(experience_store=experience_store)
+
+        result = asyncio.run(brain.capture_experience(
+            Experience(content="unauthorized", experience_type=ExperienceType.TASK_OUTCOME)
+        ))
+
+        assert result == ""
+        assert experience_store.count() == 0
 
 
 class TestBrainIntegration:
