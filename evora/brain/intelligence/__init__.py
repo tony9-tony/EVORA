@@ -38,6 +38,17 @@ from evora.brain.intelligence.inference import (
 )
 from evora.brain.intelligence.runtime import IntelligenceRuntime
 from evora.brain.intelligence.provider import NativeIntelligenceProvider
+from evora.brain.intelligence.training import (
+    TrainingPipeline,
+    ConfidenceCalibrator,
+    ContradictionDetector,
+    NativeIntelligenceMetrics,
+    TrainingExample,
+    OutcomeType,
+    TrainingExampleStatus,
+    ProvenanceTracker,
+    ProvenanceRecord,
+)
 
 __all__ = [
     "KnowledgeGraph",
@@ -62,4 +73,13 @@ __all__ = [
     "InferenceResult",
     "IntelligenceRuntime",
     "NativeIntelligenceProvider",
+    "TrainingPipeline",
+    "ConfidenceCalibrator",
+    "ContradictionDetector",
+    "NativeIntelligenceMetrics",
+    "TrainingExample",
+    "OutcomeType",
+    "TrainingExampleStatus",
+    "ProvenanceTracker",
+    "ProvenanceRecord",
 ]

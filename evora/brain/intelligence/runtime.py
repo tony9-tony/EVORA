@@ -8,6 +8,7 @@ Coordinates native intelligence capabilities:
   - KnowledgeGraph
   - IntelligenceEvaluator
   - CapabilityRegistry
+  - TrainingPipeline (Phase 11)
 
 NO ModelManager dependency.
 NO external model dependency.
@@ -38,6 +39,7 @@ class IntelligenceRuntime:
         intelligence_evaluator: Any,
         capability_registry: Any,
         logger: Optional[Logger] = None,
+        training_pipeline: Any = None,
     ):
         self.native_reasoning = native_reasoning
         self.native_planner = native_planner
@@ -46,12 +48,14 @@ class IntelligenceRuntime:
         self.intelligence_evaluator = intelligence_evaluator
         self.capability_registry = capability_registry
         self.logger = logger
+        self.training_pipeline = training_pipeline
 
     async def reason(self, goal: str, context: dict[str, Any] = None) -> Any:
         """Reason using native capabilities only.
 
         Returns ReasoningResult.
         Never calls ModelManager.
+        Records training example if training pipeline is configured.
         """
         if not goal or not goal.strip():
             from evora.brain.intelligence.reasoning import ReasoningResult
@@ -66,7 +70,6 @@ class IntelligenceRuntime:
         try:
             from evora.brain.intelligence.reasoning import ReasoningFacts
 
-            # Build reasoning facts
             facts = ReasoningFacts(
                 goal=goal,
                 observations=context.get("observations", []) if context else [],
@@ -76,6 +79,23 @@ class IntelligenceRuntime:
             )
 
             result = await self.native_reasoning.reason(facts)
+
+            if self.training_pipeline is not None:
+                try:
+                    outcome = self._outcome_from_reasoning(result)
+                    self.training_pipeline.record_training_example(
+                        session_id=context.get("session_id", "") if context else "",
+                        task_id=context.get("task_id", "") if context else "",
+                        project=context.get("project", "") if context else "",
+                        component="reasoning",
+                        input_data={"goal": goal, "context": context or {}},
+                        output_data={"result": result.to_dict() if hasattr(result, "to_dict") else str(result)},
+                        outcome=outcome,
+                        confidence=result.confidence,
+                    )
+                except Exception:
+                    pass
+
             return result
 
         except Exception as e:
@@ -95,12 +115,30 @@ class IntelligenceRuntime:
 
         Returns NativePlan or None.
         Never calls ModelManager.
+        Records training example if training pipeline is configured.
         """
         if not goal or not goal.strip():
             return None
 
         try:
             result = await self.native_planner.plan(goal, constraints)
+
+            if self.training_pipeline is not None and result is not None:
+                try:
+                    outcome = self._outcome_from_plan(result)
+                    self.training_pipeline.record_training_example(
+                        session_id="",
+                        task_id="",
+                        project="",
+                        component="planner",
+                        input_data={"goal": goal, "constraints": constraints or []},
+                        output_data={"plan": result.to_dict() if hasattr(result, "to_dict") else str(result)},
+                        outcome=outcome,
+                        confidence=result.confidence,
+                    )
+                except Exception:
+                    pass
+
             return result
         except Exception as e:
             if self.logger:
@@ -112,6 +150,7 @@ class IntelligenceRuntime:
 
         Returns InferenceResult.
         Never calls ModelManager.
+        Records training example if training pipeline is configured.
         """
         if not query or not query.strip():
             from evora.brain.intelligence.inference import InferenceResult
@@ -124,6 +163,23 @@ class IntelligenceRuntime:
 
         try:
             result = await self.inference_engine.infer(query, context)
+
+            if self.training_pipeline is not None:
+                try:
+                    outcome = self._outcome_from_inference(result)
+                    self.training_pipeline.record_training_example(
+                        session_id="",
+                        task_id="",
+                        project="",
+                        component="inference",
+                        input_data={"query": query, "context": context or {}},
+                        output_data={"result": result.to_dict() if hasattr(result, "to_dict") else str(result)},
+                        outcome=outcome,
+                        confidence=result.confidence,
+                    )
+                except Exception:
+                    pass
+
             return result
         except Exception as e:
             if self.logger:
@@ -199,3 +255,45 @@ class IntelligenceRuntime:
             return self.knowledge_graph.add_node(node)
         except Exception:
             return ""
+
+    def _outcome_from_reasoning(self, result: Any) -> Any:
+        """Derive outcome type from reasoning result."""
+        from evora.brain.intelligence.training import OutcomeType
+        if result is None:
+            return OutcomeType.FAILURE
+        confidence = getattr(result, "confidence", 0.0)
+        limitations = getattr(result, "limitations", []) or []
+        if not limitations and confidence >= 0.7:
+            return OutcomeType.SUCCESS
+        elif confidence >= 0.4:
+            return OutcomeType.PARTIAL
+        else:
+            return OutcomeType.UNCERTAIN
+
+    def _outcome_from_plan(self, plan: Any) -> Any:
+        """Derive outcome type from plan result."""
+        from evora.brain.intelligence.training import OutcomeType
+        if plan is None:
+            return OutcomeType.FAILURE
+        confidence = getattr(plan, "confidence", 0.0)
+        steps = getattr(plan, "steps", []) or []
+        if confidence >= 0.6 and steps:
+            return OutcomeType.SUCCESS
+        elif steps:
+            return OutcomeType.PARTIAL
+        else:
+            return OutcomeType.UNCERTAIN
+
+    def _outcome_from_inference(self, result: Any) -> Any:
+        """Derive outcome type from inference result."""
+        from evora.brain.intelligence.training import OutcomeType
+        if result is None:
+            return OutcomeType.FAILURE
+        confidence = getattr(result, "confidence", 0.0)
+        answer = getattr(result, "answer", "") or ""
+        if confidence >= 0.6 and answer.strip():
+            return OutcomeType.SUCCESS
+        elif confidence >= 0.3:
+            return OutcomeType.PARTIAL
+        else:
+            return OutcomeType.UNCERTAIN
