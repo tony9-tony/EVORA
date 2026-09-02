@@ -162,9 +162,13 @@ class SelfDevelopmentSession:
         self._implemented_plan_ids: set[str] = set()
         self._completed_sessions: set[str] = set()
         self._snapshots: dict[Path, Optional[str]] = {}
+        self._running = False
 
     async def run(self, objective: str, max_candidates: int = 3) -> str:
         """Run the full autonomous development loop."""
+        if getattr(self, "_running", False):
+            return "FAILED\n\nSelf-development session is already running"
+        self._running = True
         session_id = f"dev-{uuid.uuid4().hex[:12]}"
         self._record = DevSessionRecord(session_id=session_id, objective=objective)
         start_time = time.time()
@@ -233,6 +237,8 @@ class SelfDevelopmentSession:
             if self.logger:
                 self.logger.error(f"Development session failed: {e}")
             return self._complete(DevStatus.FAILED, str(e))
+        finally:
+            self._running = False
 
     def _inspect(self) -> InspectionReport:
         """INSPECT: Analyze the workspace."""

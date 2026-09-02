@@ -205,6 +205,27 @@ class TestApprovalBypass:
         assert result2.get("success") is False
         assert "invalid or already consumed" in result2.get("error", "").lower()
 
+    @pytest.mark.asyncio
+    async def test_approval_token_does_not_survive_process_restart(self, tmp_workspace, security, logger):
+        original = ApprovalSystem(auto_approve=True)
+        original.approve_plan("", {"id": "p", "candidate_id": "c"})
+        token = original.issue_approval_token("s", "p", "c", "creator")
+        restarted = ApprovalSystem(auto_approve=True)
+        assert token is not None
+        assert restarted.consume_approval_token(token.token_id, "s", "p", "c") is False
+
+    @pytest.mark.asyncio
+    async def test_reentrant_run_is_rejected(self, tmp_workspace, security, logger):
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace), model_manager=MagicMock(), security=security,
+            identity_service=None, approval=MagicMock(), tools=MagicMock(),
+            memory=MagicMock(), logger=logger,
+        )
+        session._running = True
+        result = await session.run("reentrant")
+        assert result.startswith("FAILED")
+        assert "already running" in result
+
 
 class TestScopeEscape:
     """Try to escape approved scope."""
