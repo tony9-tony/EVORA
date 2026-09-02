@@ -280,7 +280,7 @@ class TestDevelopmentSession:
             ))
 
             result = await session.run("Improve nothing")
-            assert "SUCCESS" in result or "No improvements" in result
+            assert "REJECTED" in result
 
     @pytest.mark.asyncio
     async def test_rejected_returns_rejected(self, tmp_workspace, security, logger):

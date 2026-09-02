@@ -106,6 +106,7 @@ class ApprovalSystem:
         self.auto_approve_level = auto_approve_level
         self._approval_callbacks: list = []
         self._issued_tokens: dict[str, ApprovalToken] = {}
+        self._approved_plans: set[tuple[str, str]] = set()
 
     def register_callback(self, callback):
         """Register a callback for programmatic approval (used in non-interactive mode)."""
@@ -156,12 +157,17 @@ class ApprovalSystem:
 
     def approve_plan(self, plan_text: str, plan_obj: Any = None) -> ApprovalDecision:
         decision, _ = self._authoritative_decision(plan_text, plan_obj)
+        if decision == ApprovalDecision.APPROVE and isinstance(plan_obj, dict):
+            plan_id = plan_obj.get("id")
+            candidate_id = plan_obj.get("candidate_id")
+            if isinstance(plan_id, str) and isinstance(candidate_id, str):
+                self._approved_plans.add((plan_id, candidate_id))
         return decision
 
     def issue_approval_token(self, session_id: str, plan_id: str, candidate_id: str, approved_by: str) -> Optional[ApprovalToken]:
-        decision, source = self._authoritative_decision("", None)
-        if decision != ApprovalDecision.APPROVE:
+        if (plan_id, candidate_id) not in self._approved_plans:
             return None
+        self._approved_plans.remove((plan_id, candidate_id))
         token = ApprovalToken.create(session_id, plan_id, candidate_id, approved_by)
         self._issued_tokens[token.token_id] = token
         return token

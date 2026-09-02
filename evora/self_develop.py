@@ -12,6 +12,7 @@ Creator approval is always required before modification.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -113,7 +114,7 @@ class SelfDevelopmentSession:
         DevStatus.APPROVED: {DevStatus.IMPLEMENTING},
         DevStatus.REJECTED: {DevStatus.IDLE},
         DevStatus.IMPLEMENTING: {DevStatus.TESTING},
-        DevStatus.TESTING: {DevStatus.EVALUATING},
+        DevStatus.TESTING: {DevStatus.EVALUATING, DevStatus.FAILED},
         DevStatus.EVALUATING: {DevStatus.BENCHMARKING},
         DevStatus.BENCHMARKING: {DevStatus.SUCCEEDED, DevStatus.FAILED},
         DevStatus.SUCCEEDED: {DevStatus.IDLE},
@@ -160,6 +161,7 @@ class SelfDevelopmentSession:
         self._approval_token: Optional[ApprovalToken] = None
         self._implemented_plan_ids: set[str] = set()
         self._completed_sessions: set[str] = set()
+        self._snapshots: dict[Path, Optional[str]] = {}
 
     async def run(self, objective: str, max_candidates: int = 3) -> str:
         """Run the full autonomous development loop."""
@@ -210,6 +212,13 @@ class SelfDevelopmentSession:
 
             await self._transition(DevStatus.EVALUATING)
             benchmark = await self._benchmark(plan, test_result)
+            if benchmark.get("exit_code") != 0 or benchmark.get("failed", 0) > 0:
+                rollback_result = await self._rollback(selected, plan, benchmark)
+                return self._complete(
+                    DevStatus.ROLLED_BACK,
+                    f"Benchmark failed. Change rolled back: {rollback_result.get('reason', 'benchmark failure')}",
+                )
+            self._record_success_history(selected, test_result, benchmark)
             lesson = self._extract_lesson(test_result, benchmark)
             completed = getattr(self, "_completed_sessions", None)
             if completed is not None:
@@ -261,6 +270,9 @@ class SelfDevelopmentSession:
         result = await self.reasoning.reason(context)
         if self.logger:
             self.logger.reason(f"Selected: {result.selected_approach} (confidence: {result.confidence})")
+
+        if result.next_action == "abort" or result.confidence <= 0:
+            return None
 
         for candidate in candidates:
             if result.selected_approach.lower() in candidate.title.lower():
@@ -315,13 +327,17 @@ class SelfDevelopmentSession:
 
         token = None
         if approved:
+            if not self.identity_service:
+                await self._transition(DevStatus.REJECTED)
+                return False, None
             approver_name = "creator"
             if self.identity_service:
                 try:
-                    approver = self.identity_service.current_identity()
+                    approver = self.identity_service.require_authority("enable_self_modification")
                     approver_name = approver.name
-                except Exception:
-                    pass
+                except PermissionError:
+                    await self._transition(DevStatus.REJECTED)
+                    return False, None
             if self._record:
                 self._record.approved_by = approver_name
             await self._transition(DevStatus.APPROVED)
@@ -349,11 +365,30 @@ class SelfDevelopmentSession:
         if self._approval_token is None:
             return {"success": False, "error": "No approval token; implementation requires valid creator approval", "results": []}
 
+        if self._status != DevStatus.APPROVED or not self._record:
+            return {"success": False, "error": "Implementation requires an approved session state", "results": []}
+
+        if not self.identity_service:
+            return {"success": False, "error": "Creator identity service is required", "results": []}
+
+        try:
+            self.identity_service.require_authority("enable_self_modification")
+        except PermissionError as e:
+            return {"success": False, "error": f"[DENIED] {e}", "results": []}
+
+        token = self._approval_token
+        if (
+            token.session_id != self._record.session_id
+            or token.plan_id != plan.id
+            or token.candidate_id != candidate.id
+        ):
+            return {"success": False, "error": "Approval token does not match the active session, plan, and candidate", "results": []}
+
         token_valid = self.approval.consume_approval_token(
-            token_id=self._approval_token.token_id,
-            session_id=self._approval_token.session_id,
-            plan_id=self._approval_token.plan_id,
-            candidate_id=self._approval_token.candidate_id,
+            token_id=token.token_id,
+            session_id=self._record.session_id,
+            plan_id=plan.id,
+            candidate_id=candidate.id,
         )
         if not token_valid:
             return {"success": False, "error": "Approval token invalid or already consumed", "results": []}
@@ -362,36 +397,41 @@ class SelfDevelopmentSession:
         if self.logger:
             self.logger.code(f"Implementing: {candidate.title}")
 
-        if self.identity_service:
-            try:
-                self.identity_service.require_authority("enable_self_modification")
-            except PermissionError as e:
-                return {"success": False, "error": f"[DENIED] {e}", "results": []}
-
-        approved_files = {Path(p).resolve() for p in getattr(candidate, "affected_files", []) if p}
+        approved_files = {
+            resolved
+            for p in getattr(candidate, "affected_files", [])
+            if p
+            for resolved in [self._resolve_target(p)]
+            if resolved is not None
+        }
+        self._snapshots = {}
 
         results = []
         for step in plan.steps:
             if step.action_type == "read_file":
                 continue
+            if step.action_type not in ("edit_file", "write_file", "run_tests"):
+                return {"success": False, "error": f"Unsupported implementation action: {step.action_type}", "results": results}
 
             if step.action_type in ("edit_file", "write_file"):
                 raw_path = step.action_args.get("path", "")
                 if raw_path:
-                    resolved = Path(raw_path).resolve()
-                    if resolved.is_symlink():
+                    raw = Path(raw_path)
+                    if raw.is_symlink() or any(parent.is_symlink() for parent in raw.parents if parent.exists()):
+                        resolved = self._resolve_target(raw_path)
                         return {
                             "success": False,
                             "error": f"Refusing to modify symlink: {raw_path} -> {resolved}",
                             "results": results,
                         }
-                    if not resolved.is_relative_to(self.workspace):
+                    resolved = self._resolve_target(raw_path)
+                    if resolved is None:
                         return {
                             "success": False,
                             "error": f"Refusing to modify path outside workspace: {raw_path}",
                             "results": results,
                         }
-                    if approved_files and resolved not in approved_files:
+                    if resolved not in approved_files:
                         return {
                             "success": False,
                             "error": f"Path {resolved} is not in the approved file set for this candidate",
@@ -404,27 +444,20 @@ class SelfDevelopmentSession:
                                 "error": f"Refusing to modify critical control file: {resolved}",
                                 "results": results,
                             }
+                    self._snapshots.setdefault(
+                        resolved,
+                        resolved.read_text(encoding="utf-8") if resolved.exists() else None,
+                    )
+                    step.action_args["path"] = str(resolved)
 
             result = await self.tools.execute(step.action_type, **step.action_args)
             results.append({"step": step.name, "success": result.success, "output": result.output, "error": result.error})
             if not result.success:
+                self._restore_snapshots()
                 return {"success": False, "error": f"Step failed: {step.name} - {result.error}", "results": results}
 
         implemented_plans = getattr(self, "_implemented_plan_ids", set())
         implemented_plans.add(plan.id)
-
-        if self.self_improve and hasattr(self.self_improve, "history") and candidate:
-            try:
-                proposal = candidate.to_proposal()
-                record = ImprovementRecord(
-                    proposal=proposal,
-                    status=ImprovementStatus.RUNNING,
-                )
-                self.self_improve.history.record(record)
-                record.status = ImprovementStatus.SUCCESS
-                self.self_improve.history.update(record)
-            except Exception:
-                pass
 
         self._record.implementation_result = {"success": True, "results": results}
         return {"success": True, "results": results}
@@ -475,10 +508,10 @@ class SelfDevelopmentSession:
                 failed = int(fail_match.group(1)) if fail_match else 0
             else:
                 command = "no_test_runner"
-                exit_code = 0
-                passed = 1 if test_result.get("success") else 0
-                failed = 0 if test_result.get("success") else 1
-                output = test_result.get("results", [{}])[0].get("output", "") if test_result.get("results") else ""
+                exit_code = -1
+                passed = 0
+                failed = 1
+                output = "No executable test runner available"
         except Exception as e:
             output = str(e)
             exit_code = -1
@@ -508,6 +541,7 @@ class SelfDevelopmentSession:
             self.logger.warn("Rolling back changes...")
 
         rollback_results = []
+        self._restore_snapshots(rollback_results)
         for step in plan.steps:
             if step.action_type == "edit_file" and step.rollback_action:
                 rollback_results.append({
@@ -516,7 +550,36 @@ class SelfDevelopmentSession:
                     "success": True,
                 })
 
-        return {"success": True, "results": rollback_results, "reason": test_result.get("error", "Tests failed")}
+        return {"success": not any(not item["success"] for item in rollback_results), "results": rollback_results, "reason": test_result.get("error", "Tests failed")}
+
+    def _resolve_target(self, raw_path: str) -> Optional[Path]:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = self.workspace / path
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent.exists()):
+            return None
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(self.workspace)
+        except ValueError:
+            return None
+        return resolved
+
+    def _restore_snapshots(self, results: Optional[list[dict[str, Any]]] = None) -> None:
+        for path, original in self._snapshots.items():
+            try:
+                if original is None:
+                    if path.exists():
+                        path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(original, encoding="utf-8")
+                if results is not None:
+                    results.append({"step": str(path), "action": "restore_snapshot", "success": True})
+            except OSError as exc:
+                if results is not None:
+                    results.append({"step": str(path), "action": "restore_snapshot", "success": False, "error": str(exc)})
+        self._snapshots = {}
 
     def _extract_lesson(self, test_result: dict, extra: dict) -> str:
         """Extract a lesson from the development attempt."""
@@ -524,6 +587,29 @@ class SelfDevelopmentSession:
             return "Change validated successfully. Maintain test coverage for future changes."
         error = test_result.get("error", extra.get("reason", "Unknown failure"))
         return f"Failure: {error}. Ensure changes are validated before approval."
+
+    def _record_success_history(
+        self,
+        candidate: ImprovementCandidate,
+        test_result: dict[str, Any],
+        benchmark: dict[str, Any],
+    ) -> None:
+        if not self.self_improve or not hasattr(self.self_improve, "history"):
+            return
+        record = ImprovementRecord(
+            proposal=candidate.to_proposal(),
+            status=ImprovementStatus.PENDING,
+            approved_by=self._record.approved_by if self._record else None,
+            test_result=json.dumps({"tests": test_result, "benchmark": benchmark}, sort_keys=True),
+        )
+        self.self_improve.history.record(record)
+        record.status = ImprovementStatus.APPROVED
+        self.self_improve.history.update(record)
+        record.status = ImprovementStatus.RUNNING
+        self.self_improve.history.update(record)
+        record.status = ImprovementStatus.SUCCESS
+        record.after_validation = benchmark
+        self.self_improve.history.update(record)
 
     def _complete(self, status: DevStatus, message: str) -> str:
         """Complete the session with a final status."""

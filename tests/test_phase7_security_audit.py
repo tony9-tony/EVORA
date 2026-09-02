@@ -53,6 +53,13 @@ def logger():
     return Logger("evora-audit-p7", "info", None)
 
 
+@pytest.fixture
+def creator_identity_service(tmp_workspace, logger):
+    store = IdentityStore(str(tmp_workspace / "identities"))
+    store.bootstrap_creator("Creator")
+    return IdentityService(store=store, logger=logger)
+
+
 class TestApprovalBypass:
     """Try to bypass creator approval."""
 
@@ -160,12 +167,12 @@ class TestApprovalBypass:
         assert "approval token" in result.get("error", "").lower()
 
     @pytest.mark.asyncio
-    async def test_approval_token_is_single_use(self, tmp_workspace, security, logger):
+    async def test_approval_token_is_single_use(self, tmp_workspace, security, logger, creator_identity_service):
         session = SelfDevelopmentSession(
             workspace_dir=str(tmp_workspace),
             model_manager=MagicMock(),
             security=security,
-            identity_service=None,
+            identity_service=creator_identity_service,
             approval=MagicMock(),
             tools=MagicMock(),
             memory=MagicMock(),
@@ -491,7 +498,7 @@ class TestCriticalFileProtection:
         assert "REJECTED" in result or "FAILED" in result or "MODIFIED" not in target.read_text()
 
     @pytest.mark.asyncio
-    async def test_critical_file_in_affected_files_blocked_with_absolute_path(self, tmp_workspace, security, logger):
+    async def test_critical_file_in_affected_files_blocked_with_absolute_path(self, tmp_workspace, security, logger, creator_identity_service):
         target = tmp_workspace / "evora" / "security.py"
         target.parent.mkdir(parents=True, exist_ok=True)
         original = "class SecurityManager:\n    pass\n"
@@ -503,7 +510,7 @@ class TestCriticalFileProtection:
             workspace_dir=str(tmp_workspace),
             model_manager=MagicMock(),
             security=security,
-            identity_service=None,
+            identity_service=creator_identity_service,
             approval=MagicMock(),
             tools=real_tools,
             memory=MagicMock(),
@@ -514,7 +521,8 @@ class TestCriticalFileProtection:
         token = ApprovalToken.create(session_id="test", plan_id="p1", candidate_id="c1", approved_by="creator")
         session._approval_token = token
         session.approval.consume_approval_token = MagicMock(return_value=True)
-        candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high")
+        candidate = ImprovementCandidate(id="c1", title="T", description="D", category="tests", severity="high",
+                                         affected_files=[str(target)])
         plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[
             DevelopmentStep(id="s1", name="Modify security", description="Modify", action_type="edit_file",
                            action_args={"path": str(target.resolve()), "old_string": original, "new_string": "MODIFIED\n"}),
@@ -558,13 +566,13 @@ class TestImplementationSecurity:
         assert "DENIED" in result.get("error", "")
 
     @pytest.mark.asyncio
-    async def test_implementation_recorded_in_history(self, tmp_workspace, security, logger):
+    async def test_implementation_recorded_in_history(self, tmp_workspace, security, logger, creator_identity_service):
         history_dir = tmp_workspace / "history"
         history_dir.mkdir(parents=True, exist_ok=True)
         self_improve = SelfImproveTool(
             security=security,
             logger=logger,
-            identity_service=None,
+            identity_service=creator_identity_service,
             approval_system=MagicMock(),
             history_dir=str(history_dir),
         )
@@ -588,16 +596,71 @@ class TestImplementationSecurity:
         plan = DevelopmentPlan(id="p1", objective="T", candidate_id="c1", steps=[])
         await session._implement(candidate, plan)
         records = session.self_improve.history.list()
-        assert len(records) == 1
-        assert records[0].status == ImprovementStatus.SUCCESS
+        assert records == []
 
     @pytest.mark.asyncio
-    async def test_duplicate_implementation_rejected(self, tmp_workspace, security, logger):
+    async def test_token_context_cannot_cross_authorize(self, tmp_workspace, security, logger, creator_identity_service):
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace), model_manager=MagicMock(), security=security,
+            identity_service=creator_identity_service, approval=ApprovalSystem(auto_approve=True),
+            tools=MagicMock(), memory=MagicMock(), logger=logger,
+        )
+        session._status = DevStatus.APPROVED
+        session._record = DevSessionRecord(session_id="active", objective="test")
+        session._approval_token = ApprovalToken.create("foreign", "foreign-plan", "foreign-candidate", "forged")
+        candidate = ImprovementCandidate("active-candidate", "T", "D", "tests", "high", [])
+        plan = DevelopmentPlan("active-plan", "T", "active-candidate", [])
+        result = await session._implement(candidate, plan)
+        assert result["success"] is False
+        assert "does not match" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_unapproved_action_type_cannot_write(self, tmp_workspace, security, logger, creator_identity_service):
+        target = tmp_workspace / "outside.txt"
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace), model_manager=MagicMock(), security=security,
+            identity_service=creator_identity_service, approval=ApprovalSystem(auto_approve=True),
+            tools=ToolRegistry(security, logger), memory=MagicMock(), logger=logger,
+        )
+        session._status = DevStatus.APPROVED
+        session._record = DevSessionRecord(session_id="s", objective="test")
+        session._approval_token = session.approval.issue_approval_token("s", "p", "c", "forged")
+        candidate = ImprovementCandidate("c", "T", "D", "tests", "high", [])
+        plan = DevelopmentPlan("p", "T", "c", [
+            DevelopmentStep("x", "command", "", "execute_command", {
+                "command": f"python -c \"from pathlib import Path; Path(r'{target}').write_text('bad')\"",
+            }),
+        ])
+        result = await session._implement(candidate, plan)
+        assert result["success"] is False
+        assert not target.exists()
+
+    @pytest.mark.asyncio
+    async def test_rollback_restores_partial_changes(self, tmp_workspace, security, logger, creator_identity_service):
+        target = tmp_workspace / "changed.txt"
+        target.write_text("original")
+        session = SelfDevelopmentSession(
+            workspace_dir=str(tmp_workspace), model_manager=MagicMock(), security=security,
+            identity_service=creator_identity_service, approval=ApprovalSystem(auto_approve=True),
+            tools=MagicMock(), memory=MagicMock(), logger=logger,
+        )
+        session._status = DevStatus.TESTING
+        session._snapshots = {target: "original"}
+        rollback = await session._rollback(
+            ImprovementCandidate("c", "T", "D", "tests", "high", []),
+            DevelopmentPlan("p", "T", "c", []),
+            {"error": "failed"},
+        )
+        assert rollback["success"] is True
+        assert target.read_text() == "original"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_implementation_rejected(self, tmp_workspace, security, logger, creator_identity_service):
         session = SelfDevelopmentSession(
             workspace_dir=str(tmp_workspace),
             model_manager=MagicMock(),
             security=security,
-            identity_service=None,
+            identity_service=creator_identity_service,
             approval=MagicMock(),
             tools=MagicMock(),
             memory=MagicMock(),
