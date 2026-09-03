@@ -623,14 +623,14 @@ async def async_run(args):
 
     security.add_approval_callback(approval.approve_command)
 
+    # Phase 3: Set up identity and memory services
+    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
+    memory_service = memory.get_memory_service(identity_service=identity_service, logger=logger)
+
     result = analyzer.analyze()
 
     planner = Planner(manager, logger)
     tools = ToolRegistry(security, logger, identity_service=identity_service, approval_system=approval)
-
-    # Phase 3: Set up identity and memory services
-    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
-    memory_service = memory.get_memory_service(identity_service=identity_service, logger=logger)
 
     agent_config = AutonomousConfig(
         max_retries=getattr(args, 'max_retries', 3),
