@@ -53,14 +53,56 @@ def native_agent():
 
 @pytest.fixture
 def agent_with_deps():
+    from unittest.mock import AsyncMock
+    from evora.approval import ApprovalDecision
+
+    runtime = MagicMock()
+    native_plan = MagicMock()
+    native_plan.to_dict.return_value = {
+        "steps": [{"id": "step-1", "action_type": "analyze_project", "name": "Analyze", "action_args": {"path": "."}}],
+        "confidence": 0.6,
+        "requires_approval": True,
+        "limitations": [],
+    }
+    runtime.plan = AsyncMock(return_value=native_plan)
+
+    reasoning_result = MagicMock()
+    reasoning_result.to_dict.return_value = {
+        "decision": "proceed", "action": "analyze", "confidence": 0.5,
+        "reasoning_summary": "Test reasoning", "limitations": [],
+    }
+    runtime.reason = AsyncMock(return_value=reasoning_result)
+
+    # Mock tool that returns a proper ToolResult
+    mock_tool = MagicMock()
+    tool_result = MagicMock()
+    tool_result.success = True
+    tool_result.output = "Tool executed"
+    tool_result.error = ""
+    mock_tool.execute = AsyncMock(return_value=tool_result)
+
+    tool_registry = MagicMock()
+    tool_registry.get.return_value = mock_tool
+    tool_registry.list.return_value = []
+
+    approval_system = MagicMock()
+    approval_system.approve_plan.return_value = ApprovalDecision.APPROVE
+
+    permission_manager = MagicMock()
+    permission_manager.check_command_safety.return_value = MagicMock()
+    permission_manager.request_approval.return_value = True
+
+    identity_service = MagicMock()
+    identity_service.require_authority.return_value = MagicMock()
+
     return NativeAgent(
-        intelligence_runtime=MagicMock(),
+        intelligence_runtime=runtime,
         comprehension_intelligence=MagicMock(),
         conversation_manager=MagicMock(),
-        tool_registry=MagicMock(),
-        permission_manager=MagicMock(),
-        approval_system=MagicMock(),
-        identity_service=MagicMock(),
+        tool_registry=tool_registry,
+        permission_manager=permission_manager,
+        approval_system=approval_system,
+        identity_service=identity_service,
         training_pipeline=MagicMock(),
         logger=Logger("evora-test-p17-deps", "info", None),
     )

@@ -185,45 +185,109 @@ class NativeAgent:
         self._history: list[dict[str, Any]] = []
 
     def execute(self, goal: str, context: dict[str, Any] = None) -> AgentResult:
-        """Execute an agent cycle: observe → understand → reason → plan → request auth → act → test → evaluate → learn."""
+        """Execute an agent cycle: observe → understand → reason → plan → request auth → act → test → evaluate → learn.
+
+        Executes ALL authorized plan steps through the real tool layer,
+        not just the first step. Each step has authorization, execution,
+        result, and failure handling.
+        """
         context = context or {}
         result = AgentResult()
         observations = []
+        all_step_results: list[dict[str, Any]] = []
+        overall_success = False
 
         try:
             observations.extend(self.observe(context))
             understanding = self.understand(goal, context)
             reasoning = self.reason(goal, understanding, context)
             plan = self.plan(goal, reasoning, context)
+
             if plan.get("requires_approval", True):
                 authorized = self.request_authorization(plan, context)
                 if not authorized:
                     result.success = False
                     result.error = "Authorization denied"
                     result.observations = observations
+                    self._state = AgentState.IDLE
+                    self._record_history(goal, result)
                     return result
-            action = self.decide_action(plan, reasoning)
-            result = self.act(action, context)
-            observations.extend(result.observations)
-            test_result = self.test(result, context)
+
+            # Execute ALL plan steps (not just the first one)
+            steps = plan.get("steps", [])
+            if not steps:
+                result.success = False
+                result.error = "Plan contains no steps"
+                result.observations = observations
+                self._state = AgentState.IDLE
+                self._record_history(goal, result)
+                return result
+
+            overall_success = True
+            first_action_id = ""
+            for i, step in enumerate(steps):
+                step_plan = {"steps": [step], "requires_approval": plan.get("requires_approval", False)}
+                action = self.decide_action(step_plan, reasoning)
+                if i == 0:
+                    first_action_id = action.action_id
+
+                step_result = self.act(action, context)
+                observations.extend(step_result.observations)
+
+                step_dict = {
+                    "step_index": i,
+                    "action_type": action.action_type,
+                    "success": step_result.success,
+                    "output": step_result.output[:200],
+                    "error": step_result.error,
+                }
+                all_step_results.append(step_dict)
+
+                if not step_result.success:
+                    overall_success = False
+                    result.error = f"Step {i} ({action.action_type}) failed: {step_result.error}"
+                    result.output = step_result.output
+                    result.observations = observations
+                    self._state = AgentState.ERROR
+                    self._record_history(goal, result, metadata={"steps": all_step_results})
+                    return result
+
+                if step_result.output:
+                    if result.output:
+                        result.output += "\n"
+                    result.output += step_result.output
+
+            result.success = overall_success
+            result.action_id = first_action_id
+            result.observations = observations
+            test_result = self.test(result, {"plan_steps": all_step_results, **context})
             evaluation = self.evaluate(goal, result, test_result, context)
             result.evaluation = evaluation
             lesson = self.learn(goal, result, evaluation, context)
             result.lesson_learned = lesson
-            self._state = AgentState.IDLE
+            result.metadata = {"steps": all_step_results}
+
         except Exception as e:
             self._state = AgentState.ERROR
             result.error = str(e)
+            result.observations = observations
             if self.logger:
                 self.logger.error(f"Agent execution failed: {e}")
 
-        result.observations = observations
+        self._state = AgentState.IDLE
+        self._record_history(goal, result, metadata={"steps": all_step_results} if all_step_results else {})
+        return result
+
+    def _record_history(self, goal: str, result: AgentResult, metadata: dict[str, Any] = None) -> None:
+        """Record execution history."""
+        if metadata is None:
+            metadata = {}
         self._history.append({
             "goal": goal,
             "result": result.to_dict(),
             "timestamp": datetime.now().isoformat(),
+            **metadata,
         })
-        return result
 
     def observe(self, context: dict[str, Any]) -> list[AgentObservation]:
         """Observe the environment."""
@@ -314,19 +378,25 @@ class NativeAgent:
         return plan
 
     def request_authorization(self, plan: dict[str, Any], context: dict[str, Any]) -> bool:
-        """Request authorization for the plan."""
+        """Request authorization for the plan through the real ApprovalSystem.
+
+        Uses ApprovalSystem.approve_plan, NOT a non-existent request_approval.
+        If no approval_system is configured, authorization is denied unless
+        the plan explicitly says no approval is needed.
+        """
         self._state = AgentState.REQUESTING_AUTHORIZATION
         if self.approval_system is None:
             return plan.get("requires_approval", True) is False
         try:
-            if hasattr(self.approval_system, "request_approval"):
-                return self.approval_system.request_approval(
-                    action=f"Execute plan with {len(plan.get('steps', []))} steps",
-                    reason=plan.get("reasoning", ""),
-                )
-        except Exception:
-            pass
-        return False
+            plan_text = plan.get("metadata", {}).get("summary", plan.get("metadata", {}).get("goal", "Plan"))
+            plan_obj = plan if isinstance(plan, dict) else None
+            decision = self.approval_system.approve_plan(plan_text, plan_obj)
+            from evora.approval import ApprovalDecision
+            return decision == ApprovalDecision.APPROVE
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Authorization request failed: {e}")
+            return False
 
     def decide_action(self, plan: dict[str, Any], reasoning: dict[str, Any]) -> AgentAction:
         """Decide the next action from the plan."""
@@ -350,9 +420,51 @@ class NativeAgent:
         )
 
     def act(self, action: AgentAction, context: dict[str, Any]) -> AgentResult:
-        """Execute an action."""
+        """Execute an action through the real ToolRegistry.
+
+        NEVER simulates success. If no tool is available for the action type,
+        returns failure with a clear error.
+        """
         self._state = AgentState.ACTING
         result = AgentResult(action_id=action.action_id)
+
+        # Check authorization through permission manager before acting
+        if self.permission_manager is not None:
+            try:
+                from evora.security import PermissionLevel
+                level = self.permission_manager.check_command_safety(action.action_type)
+                approved = self.permission_manager.request_approval(
+                    action.action_type, level, reason=f"Agent action: {action.description}"
+                )
+                if not approved:
+                    result.success = False
+                    result.error = "Action denied by permission manager"
+                    result.observations.append(AgentObservation(
+                        observation_type="authorization",
+                        source="permission_manager",
+                        data={"action": action.action_type, "approved": False},
+                    ))
+                    return result
+            except Exception as e:
+                result.success = False
+                result.error = f"Permission check failed: {e}"
+                return result
+
+        # Check identity authority
+        if self.identity_service is not None:
+            try:
+                self.identity_service.require_authority(action.action_type)
+            except PermissionError as e:
+                result.success = False
+                result.error = f"Permission denied: {e}"
+                result.observations.append(AgentObservation(
+                    observation_type="authorization",
+                    source="identity_service",
+                    data={"action": action.action_type, "denied": True},
+                ))
+                return result
+
+        # Execute via ToolRegistry
         if self.tool_registry is not None:
             try:
                 tool = self.tool_registry.get(action.action_type)
@@ -368,12 +480,27 @@ class NativeAgent:
                         data={"success": tool_result.success, "output": result.output[:200]},
                     ))
                     return result
+                else:
+                    result.success = False
+                    result.error = f"No tool registered for action type: {action.action_type}"
+                    result.observations.append(AgentObservation(
+                        observation_type="tool_execution",
+                        source=action.action_type,
+                        data={"success": False, "error": result.error},
+                    ))
+                    return result
             except Exception as e:
                 result.success = False
                 result.error = str(e)
+                result.observations.append(AgentObservation(
+                    observation_type="tool_execution",
+                    source=action.action_type,
+                    data={"success": False, "error": str(e)},
+                ))
                 return result
-        result.success = True
-        result.output = f"Simulated action: {action.description}"
+
+        result.success = False
+        result.error = f"No tool registry available for action: {action.description}"
         return result
 
     def test(self, action_result: AgentResult, context: dict[str, Any]) -> dict[str, Any]:
