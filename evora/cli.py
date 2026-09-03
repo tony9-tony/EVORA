@@ -670,6 +670,66 @@ async def async_run(args):
         manager.close()
 
 
+async def async_run_native(args):
+    """Run the EVORA native agent on a task (no external model required)."""
+    config = load_config()
+    logger = Logger("evora", config.log_level, config.log_file)
+    workspace = args.workspace or config.workspace_dir
+
+    security = PermissionManager(
+        workspace_dir=workspace,
+        allow_file_write=config.permissions.allow_file_write,
+        allow_cmd_exec=config.permissions.allow_cmd_exec,
+        allowed_cmds=config.permissions.allowed_cmds,
+        ask_approvals=not args.auto_approve,
+    )
+
+    memory = Memory(config.memory_dir, project_name=Path(workspace).name)
+    identity_service = IdentityService(identity_dir=config.identity_dir, logger=logger)
+    memory_service = memory.get_memory_service(identity_service=identity_service, logger=logger)
+
+    approval = ApprovalSystem(
+        logger=logger,
+        auto_approve=args.auto_approve,
+    )
+    security.add_approval_callback(approval.approve_command)
+
+    tools = ToolRegistry(security, logger, identity_service=identity_service, approval_system=approval)
+
+    # Build the shared native intelligence spine
+    from evora.brain.intelligence.spine_factory import NativeSpineFactory
+    factory = NativeSpineFactory(logger=logger)
+    spine = factory.create_spine(
+        memory_service=memory_service,
+        tool_registry=tools,
+        identity_service=identity_service,
+        permission_manager=security,
+        approval_system=approval,
+        model_provider=None,
+    )
+    native_agent = spine["native_agent"]
+
+    print(f"\n[EVORA NATIVE] Capability registry: {spine['capability_registry'].summary()}")
+    print(f"[EVORA NATIVE] Knowledge graph: {spine['knowledge_graph'].summary()}")
+
+    try:
+        result = native_agent.execute(args.request, context={"workspace": workspace})
+        if result.success:
+            print(f"\n[EVORA NATIVE] Task completed successfully")
+            if result.output:
+                print(f"Output: {result.output}")
+        else:
+            print(f"\n[EVORA NATIVE] Task failed: {result.error}")
+        return 0 if result.success else 1
+    except KeyboardInterrupt:
+        print("\n[EVORA] Task cancelled by user.")
+        return 1
+    except Exception as e:
+        logger.error(f"Fatal error in native mode: {e}")
+        print(f"\n[EVORA] Fatal error: {e}")
+        return 1
+
+
 async def async_plan(args):
     """Generate a plan without executing."""
     config = load_config()
@@ -757,7 +817,8 @@ Examples:
     run_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
     run_parser.add_argument("--timeout", type=int, default=60, help="Command timeout in seconds")
     run_parser.add_argument("--max-retries", type=int, default=3, help="Max retry attempts")
-    run_parser.add_argument("--provider", type=str, default=None, help="Model provider (openai, ollama, anthropic)")
+    run_parser.add_argument("--provider", type=str, default=None, help="Model provider (openai, ollama, anthropic, native)")
+    run_parser.add_argument("--native", action="store_true", help="Use native intelligence only (no external model)")
 
     chat_parser = subparsers.add_parser("chat", help="Interactive chat with EVORA")
     chat_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
@@ -889,7 +950,10 @@ Examples:
         exit_code = async_chat(args)
         sys.exit(exit_code)
     elif args.command == "run":
-        exit_code = asyncio.run(async_run(args))
+        if getattr(args, "native", False):
+            exit_code = asyncio.run(async_run_native(args))
+        else:
+            exit_code = asyncio.run(async_run(args))
         sys.exit(exit_code)
     elif args.command == "learn":
         exit_code = asyncio.run(async_learn(args))

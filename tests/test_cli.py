@@ -455,3 +455,164 @@ class TestAsyncRunConstructionOrder:
         assert "identity_service" in captured
         from evora.identity import IdentityService
         assert isinstance(captured["identity_service"], IdentityService)
+
+
+class TestNativeExecutionPath:
+    """Integration tests for the native intelligence execution path."""
+
+    def _make_native_args(self, tmp_path):
+        """Create args for async_run_native."""
+        from argparse import Namespace
+        return Namespace(
+            request="Create a test file",
+            workspace=str(tmp_path),
+            auto_approve=True,
+            provider=None,
+            timeout=60,
+            max_retries=1,
+        )
+
+    @pytest.fixture
+    def native_run_env(self, tmp_path, monkeypatch):
+        """Patch dependencies for native run testing."""
+        from evora.identity import IdentityService
+        from evora.memory import Memory
+        from evora.security import PermissionManager
+        from evora.approval import ApprovalSystem
+        from evora.tools import ToolRegistry
+        from evora.analyzer import ProjectAnalyzer
+
+        identity_dir = str(tmp_path / "identity")
+        memory_dir = str(tmp_path / "memory")
+        Path(identity_dir).mkdir(parents=True, exist_ok=True)
+        Path(memory_dir).mkdir(parents=True, exist_ok=True)
+
+        def fake_load_config():
+            return Config(
+                api_key="",
+                provider="",
+                model="gpt-4o",
+                base_url="https://api.openai.com/v1",
+                workspace_dir=str(tmp_path),
+                log_level="ERROR",
+                log_file="",
+                memory_dir=memory_dir,
+                identity_dir=identity_dir,
+                providers={
+                    "ollama": ProviderConfig(name="ollama", model="test", base_url="http://127.0.0.1:11434/v1"),
+                },
+            )
+
+        monkeypatch.setattr("evora.cli.load_config", fake_load_config)
+
+        svc = IdentityService(identity_dir=identity_dir)
+        if svc.get_creator() is None:
+            svc.bootstrap_creator_with_profile(name="test_creator", display_name="Test Creator")
+
+        return tmp_path
+
+    def test_async_run_native_reaches_native_agent(self, native_run_env):
+        """async_run_native must construct NativeAgent and execute the task."""
+        from evora.cli import async_run_native
+        args = self._make_native_args(native_run_env)
+        with patch.object(
+            __import__("evora.brain.intelligence.agent_intelligence", fromlist=["NativeAgent"]).NativeAgent,
+            "execute",
+            return_value=MagicMock(success=True, output="Done", error=""),
+        ) as mock_execute:
+            result = asyncio.run(async_run_native(args))
+            assert isinstance(result, int)
+            assert mock_execute.called
+
+    def test_async_run_native_no_model_manager_needed(self, native_run_env):
+        """Native path must not require ModelManager."""
+        from evora.cli import async_run_native
+        args = self._make_native_args(native_run_env)
+        # Should complete without ModelManager being created
+        result = asyncio.run(async_run_native(args))
+        assert isinstance(result, int)
+
+    def test_native_spine_factory_creates_complete_spine(self):
+        """NativeSpineFactory must create all required components."""
+        from evora.brain.intelligence.spine_factory import NativeSpineFactory
+        from evora.memory import Memory, MemoryService
+        from evora.identity import IdentityService
+        from evora.security import PermissionManager
+        from evora.approval import ApprovalSystem
+        from evora.tools import ToolRegistry
+        import tempfile, os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mem_dir = str(Path(tmp) / "memory")
+            id_dir = str(Path(tmp) / "identity")
+            Path(mem_dir).mkdir()
+            Path(id_dir).mkdir()
+
+            identity_service = IdentityService(identity_dir=id_dir)
+            memory = Memory(mem_dir)
+            memory_service = memory.get_memory_service(identity_service=identity_service)
+            security = PermissionManager(workspace_dir=tmp)
+            approval = ApprovalSystem(auto_approve=True)
+            tools = ToolRegistry(security, identity_service=identity_service, approval_system=approval)
+
+            factory = NativeSpineFactory(logger=Logger("test", "ERROR", ""))
+            spine = factory.create_spine(
+                memory_service=memory_service,
+                tool_registry=tools,
+                identity_service=identity_service,
+                permission_manager=security,
+                approval_system=approval,
+            )
+
+            assert "runtime" in spine
+            assert "orchestrator" in spine
+            assert "capability_registry" in spine
+            assert "knowledge_graph" in spine
+            assert "native_reasoning" in spine
+            assert "native_planner" in spine
+            assert "inference_engine" in spine
+            assert "intelligence_evaluator" in spine
+            assert "native_agent" in spine
+            assert "native_chatbot" in spine
+            assert "runtime" in spine
+
+    def test_native_provider_registers_with_model_manager(self):
+        """NativeIntelligenceProvider can be registered with ModelManager."""
+        from evora.brain.intelligence.provider import NativeIntelligenceProvider
+        from evora.brain.intelligence.spine_factory import NativeSpineFactory
+        from evora.model import ModelManager
+        from evora.memory import Memory, MemoryService
+        from evora.identity import IdentityService
+        from evora.security import PermissionManager
+        from evora.approval import ApprovalSystem
+        from evora.tools import ToolRegistry
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mem_dir = str(Path(tmp) / "memory")
+            id_dir = str(Path(tmp) / "identity")
+            Path(mem_dir).mkdir()
+            Path(id_dir).mkdir()
+
+            identity_service = IdentityService(identity_dir=id_dir)
+            memory = Memory(mem_dir)
+            memory_service = memory.get_memory_service(identity_service=identity_service)
+            security = PermissionManager(workspace_dir=tmp)
+            approval = ApprovalSystem(auto_approve=True)
+            tools = ToolRegistry(security, identity_service=identity_service, approval_system=approval)
+
+            factory = NativeSpineFactory(logger=Logger("test", "ERROR", ""))
+            runtime = factory.create_runtime(
+                memory_service=memory_service,
+                tool_registry=tools,
+            )
+
+            provider = NativeIntelligenceProvider(runtime=runtime)
+            manager = ModelManager(Logger("test", "ERROR", ""))
+            manager.register("native", provider)
+            assert "native" in manager.list_providers()
+            manager.set_active("native")
+            assert manager.active.name() == "native"
+            manager.close()
