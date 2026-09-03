@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from evora.config import Config, ProviderConfig
-from evora.cli import _build_model_manager, _chat_turn
+from evora.cli import _build_model_manager, _chat_turn, async_run
 from evora.identity import AuthorityLevel, Identity
 from evora.logger import Logger
 from evora.memory import LongTermMemoryEntry, RetrievalResult
@@ -328,3 +328,130 @@ class TestChatServer:
         )
         assert result.returncode == 0
         assert "Interactive chat" in result.stdout or "chat" in result.stdout
+
+
+class TestAsyncRunConstructionOrder:
+    """Regression tests for the async_run construction-order bug.
+
+    Previously, identity_service was referenced before assignment in
+    async_run, causing UnboundLocalError. These tests verify the
+    function reaches the execution layer instead of crashing.
+    """
+
+    def _make_args(self, tmp_path):
+        """Create a minimal args namespace for async_run."""
+        from argparse import Namespace
+        return Namespace(
+            request="Create a test file",
+            workspace=str(tmp_path),
+            auto_approve=True,
+            provider=None,
+            timeout=60,
+            max_retries=1,
+        )
+
+    @pytest.fixture
+    def patched_run_env(self, tmp_path, monkeypatch):
+        """Patch external dependencies so async_run can be tested in isolation."""
+        from evora.identity import IdentityService
+        from evora.memory import Memory
+        from evora.security import PermissionManager
+        from evora.approval import ApprovalSystem
+        from evora.tools import ToolRegistry
+        from evora.analyzer import ProjectAnalyzer
+        from evora.planner import Planner
+
+        identity_dir = str(tmp_path / "identity")
+        memory_dir = str(tmp_path / "memory")
+        Path(identity_dir).mkdir(parents=True, exist_ok=True)
+        Path(memory_dir).mkdir(parents=True, exist_ok=True)
+
+        def fake_load_config():
+            return Config(
+                api_key="",
+                provider="",
+                model="gpt-4o",
+                base_url="https://api.openai.com/v1",
+                workspace_dir=str(tmp_path),
+                log_level="ERROR",
+                log_file="",
+                memory_dir=memory_dir,
+                identity_dir=identity_dir,
+                providers={
+                    "ollama": ProviderConfig(name="ollama", model="test", base_url="http://127.0.0.1:11434/v1"),
+                },
+            )
+
+        def fake_build_model_manager(config, logger, provider_override=None):
+            from evora.model import ModelManager
+            mgr = ModelManager(logger)
+            from evora.cli import MockModelProvider
+            mgr.register("mock", MockModelProvider())
+            mgr.set_active("mock")
+            return mgr
+
+        # Bootstrap creator for identity
+        def bootstrap():
+            svc = IdentityService(identity_dir=identity_dir)
+            if svc.get_creator() is None:
+                svc.bootstrap_creator_with_profile(name="test_creator", display_name="Test Creator")
+            return svc
+
+        bootstrap()
+
+        monkeypatch.setattr("evora.cli.load_config", fake_load_config)
+        monkeypatch.setattr("evora.cli._build_model_manager", fake_build_model_manager)
+
+        return tmp_path
+
+    def test_async_run_does_not_raise_unbound_local(self, patched_run_env):
+        """async_run must not raise UnboundLocalError for identity_service."""
+        args = self._make_args(patched_run_env)
+        try:
+            result = asyncio.run(async_run(args))
+            assert isinstance(result, int)
+        except UnboundLocalError as e:
+            pytest.fail(f"async_run raised UnboundLocalError: {e}")
+
+    def test_async_run_reaches_execution_layer(self, patched_run_env):
+        """async_run must construct all services and reach agent.run."""
+        args = self._make_args(patched_run_env)
+        with patch.object(__import__("evora.autonomous", fromlist=["AutonomousAgent"]).AutonomousAgent, "run",
+                          new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "Mock report: task completed"
+            try:
+                result = asyncio.run(async_run(args))
+                assert isinstance(result, int)
+                assert mock_run.called
+            except UnboundLocalError as e:
+                pytest.fail(f"async_run raised UnboundLocalError: {e}")
+
+    def test_async_run_identity_service_available(self, patched_run_env, monkeypatch):
+        """Verify identity_service is created before use in async_run."""
+        from evora.cli import async_run
+        args = self._make_args(patched_run_env)
+
+        captured = {}
+
+        original_agent_init = __import__("evora.autonomous", fromlist=["AutonomousAgent"]).AutonomousAgent.__init__
+
+        def spy_init(self, *a, **kwargs):
+            if "identity_service" in kwargs:
+                captured["identity_service"] = kwargs["identity_service"]
+            return original_agent_init(self, *a, **kwargs)
+
+        monkeypatch.setattr(
+            "evora.autonomous.AutonomousAgent.__init__", spy_init
+        )
+
+        with patch.object(__import__("evora.autonomous", fromlist=["AutonomousAgent"]).AutonomousAgent, "run",
+                          new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "OK"
+            try:
+                asyncio.run(async_run(args))
+            except UnboundLocalError:
+                pytest.fail("UnboundLocalError - identity_service referenced before assignment")
+
+        assert "identity_service" in captured
+        from evora.identity import IdentityService
+        assert isinstance(captured["identity_service"], IdentityService)
