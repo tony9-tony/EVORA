@@ -144,11 +144,15 @@ aside .tabs .badge{background:var(--rose);color:#fff;border-radius:999px;font-si
       <button data-p="pApp">Approvals<span class="badge" id="appBadge" hidden>0</span></button>
       <button data-p="pLvl">Autonomy</button>
       <button data-p="pAud">Audit</button>
+      <button data-p="pKey">Keys</button>
+      <button data-p="pGrow">Growth</button>
     </div>
     <div class="panel on" id="pAct"><div class="empty">Tool activity appears here live.</div></div>
     <div class="panel" id="pApp"><div class="empty">Nothing waiting for you.</div></div>
     <div class="panel" id="pLvl"></div>
     <div class="panel" id="pAud"></div>
+    <div class="panel" id="pKey"></div>
+    <div class="panel" id="pGrow"></div>
   </aside>
 </main>
 <script>
@@ -241,9 +245,40 @@ async function loadAudit(){
       await api('/api/trash/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:a.dataset.r})});loadAudit()});
   }catch(e){p.innerHTML='<div class="empty">Owner token needed to view the audit log.</div>'}
 }
+const JH={'Content-Type':'application/json'};
+async function post(path,obj){const r=await api(path,{method:'POST',headers:JH,body:JSON.stringify(obj)});return r.json()}
+async function loadKeys(){
+  const p=$('#pKey');
+  try{
+    const v=await (await api('/api/vault')).json();
+    let h='<div class="item"><b>Private vault</b> <span class="pill">'+(v.unlocked?'unlocked':v.exists?'locked':'not created')+'</span>'+
+      '<div class="t">Passwords and keys are stored encrypted on this PC. EVORA can use them (sign-in, GitHub, email) but never sees the values.</div></div>';
+    if(!v.unlocked){h+='<div class="item"><input id="vpass" type="password" placeholder="'+(v.exists?'Vault passphrase':'Choose a passphrase (8+ chars)')+'" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--line,#334);background:transparent;color:inherit"><div class="row" style="margin-top:8px"><button class="btn accept" id="vgo">'+(v.exists?'Unlock':'Create')+'</button></div><div class="warn" id="verr"></div></div>'}
+    else{
+      h+=v.names.map(n=>'<div class="item"><b>'+esc(n)+'</b> <a href="#" data-d="'+esc(n)+'" style="color:var(--emerald)">remove</a></div>').join('');
+      h+='<div class="item"><input id="vn" placeholder="name e.g. github_token, email_address, email_app_password" style="width:100%;padding:8px;margin-bottom:6px;border-radius:8px;border:1px solid var(--line,#334);background:transparent;color:inherit"><input id="vv" type="password" placeholder="value" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--line,#334);background:transparent;color:inherit"><div class="row" style="margin-top:8px"><button class="btn accept" id="vadd">Save</button><button class="btn deny" id="vlock">Lock</button></div></div>';
+    }
+    p.innerHTML=h;
+    const go=$('#vgo');if(go)go.onclick=async()=>{const r=await post('/api/vault/unlock',{passphrase:$('#vpass').value});if(r.error)$('#verr').textContent=r.error;else loadKeys()};
+    const add=$('#vadd');if(add){add.onclick=async()=>{await post('/api/vault/set',{name:$('#vn').value,value:$('#vv').value});loadKeys()};
+      $('#vlock').onclick=async()=>{await post('/api/vault/lock',{});loadKeys()}}
+    p.querySelectorAll('[data-d]').forEach(a=>a.onclick=async e=>{e.preventDefault();await post('/api/vault/delete',{name:a.dataset.d});loadKeys()});
+  }catch(e){p.innerHTML='<div class="empty">Owner token needed.</div>'}
+}
+async function loadGrowth(){
+  const p=$('#pGrow');
+  try{
+    const d=await (await api('/api/weaknesses')).json();
+    if(!d.items.length){p.innerHTML='<div class="empty">No weaknesses recorded yet. EVORA notes here where it fails, so you can decide what to improve.</div>';return}
+    p.innerHTML=d.items.map(i=>'<div class="item"><b>'+esc(i.tool)+'</b> <span class="pill">'+i.count+'×</span><div class="t">'+esc(i.example)+'</div><div class="row" style="margin-top:6px"><a href="#" data-f="'+esc(i.id)+'" style="color:var(--emerald)">ask EVORA to fix</a> · <a href="#" data-m="'+esc(i.id)+'">ignore</a></div></div>').join('');
+    p.querySelectorAll('[data-f]').forEach(a=>a.onclick=e=>{e.preventDefault();const i=d.items.find(x=>x.id===a.dataset.f);
+      $('.tabs button').click();send('You keep failing at this ('+i.tool+', '+i.count+' times): '+i.example+'. Investigate the cause in your own code and propose a fix; do not change anything until I approve.')});
+    p.querySelectorAll('[data-m]').forEach(a=>a.onclick=async e=>{e.preventDefault();await post('/api/weaknesses/mark',{id:a.dataset.m,status:'ignored'});loadGrowth()});
+  }catch(e){p.innerHTML='<div class="empty">Owner token needed.</div>'}
+}
 $$('.tabs button').forEach(b=>b.onclick=()=>{$$('.tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
   $$('.panel').forEach(x=>x.classList.remove('on'));$('#'+b.dataset.p).classList.add('on');
-  if(b.dataset.p==='pAud')loadAudit();if(b.dataset.p==='pApp')pollApprovals()});
+  if(b.dataset.p==='pAud')loadAudit();if(b.dataset.p==='pKey')loadKeys();if(b.dataset.p==='pGrow')loadGrowth();if(b.dataset.p==='pApp')pollApprovals()});
 
 /* ---------- chat ---------- */
 function finishTurn(){busy=false;sendBtn.disabled=false;setOrb('idle');$('#stateTxt').textContent='';if(es){es.close();es=null}}
@@ -266,7 +301,8 @@ function send(text){
   on('approval_result',()=>{setOrb('thinking');$('#stateTxt').textContent='working…'});
   on('tool_result',d=>{const el=tools[d.id];if(!el)return;el.classList.add(d.success?'ok':'fail');
     el.querySelector('.st').textContent=d.success?'done':'failed';
-    const pre=document.createElement('pre');pre.textContent=(d.error||d.output||'(no output)').slice(0,2000);el.appendChild(pre)});
+    const pre=document.createElement('pre');pre.textContent=(d.error||d.output||'(no output)').slice(0,2000);el.appendChild(pre);
+    if(d.screenshot){const im=document.createElement('img');im.src='data:image/jpeg;base64,'+d.screenshot;im.style.cssText='max-width:100%;border-radius:8px;margin-top:6px';el.appendChild(im);const a=$('#pAct');const c=im.cloneNode();c.style.cssText='width:100%;border-radius:8px;margin-top:8px';a.appendChild(c);a.scrollTop=a.scrollHeight}});
   on('note',d=>sys(d.text));
   on('error',d=>{sys('Error: '+d.error);finishTurn()});
   on('done',d=>{if(speakOn&&curText)speak(curText);finishTurn();loadStatus()});

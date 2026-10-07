@@ -779,6 +779,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         elif route == "/api/trash":
             if self._authorize(owner_only=True):
                 self._send_json({"items": chat_session.governance.trash.list()})
+        elif route == "/api/vault":
+            if self._authorize(owner_only=True):
+                self._send_json(chat_session.governance.vault.status())
+        elif route == "/api/weaknesses":
+            if self._authorize(owner_only=True):
+                self._send_json({"items": chat_session.governance.tracker.top(30)})
         elif route.startswith("/api/chat/stream"):
             if self._authorize():
                 self._handle_stream()
@@ -864,6 +870,31 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self._send_json(chat_session.governance.describe())
             except (TypeError, ValueError):
                 self._send_json({"error": "level must be 0-3"}, status=400)
+        elif route in ("/api/vault/unlock", "/api/vault/lock", "/api/vault/set", "/api/vault/delete"):
+            if not self._authorize(owner_only=True):
+                return
+            vault = chat_session.governance.vault
+            try:
+                if route.endswith("/unlock"):
+                    if not vault.unlock(str(body.get("passphrase", ""))):
+                        self._send_json({"error": "wrong passphrase"}, status=403)
+                        return
+                elif route.endswith("/lock"):
+                    vault.lock()
+                elif route.endswith("/set"):
+                    vault.set(str(body.get("name", "")).strip(), str(body.get("value", "")))
+                    chat_session.governance.audit.record("vault_set", name=body.get("name"), by="owner")
+                else:
+                    vault.delete(str(body.get("name", "")))
+                    chat_session.governance.audit.record("vault_delete", name=body.get("name"), by="owner")
+                self._send_json(vault.status())
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=400)
+        elif route == "/api/weaknesses/mark":
+            if not self._authorize(owner_only=True):
+                return
+            ok = chat_session.governance.tracker.mark(str(body.get("id", "")), str(body.get("status", "")))
+            self._send_json({"ok": ok}, status=200 if ok else 404)
         elif route == "/api/trash/restore":
             if not self._authorize(owner_only=True):
                 return

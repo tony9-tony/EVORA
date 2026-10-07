@@ -55,11 +55,12 @@ READ_TOOLS = {
     "read_file", "list_dir", "search_files", "search_content", "git_status", "git_diff",
     "git_log", "analyze_project", "analyze_code", "self_analyze",
 }
-NETWORK_READ_TOOLS = {"web_search", "web_fetch", "browser_search", "browser_read"}
+NETWORK_READ_TOOLS = {"web_search", "web_fetch", "browser_search", "browser_read", "github_read"}
 WRITE_TOOLS = {"write_file", "edit_file", "create_dir"}
 EXEC_TOOLS = {"execute_command", "run_tests"}
 GIT_WRITE_TOOLS = {"git_commit", "git_branch"}
 SEND_TOOLS = {"email_send", "email_reply", "github_write", "github_push", "browser_act", "login"}
+ACCOUNT_TOOLS = {"email_read"}  # reads a private account: asks, but "allow for this session" is possible
 DELETE_TOOLS = {"delete_path"}
 SELF_TOOLS = {"self_improve"}
 
@@ -164,13 +165,22 @@ class Classifier:
             return Action(tool, args, "self", "dangerous", "EVORA wants to change its own code",
                           "Self-modification always needs the owner.")
         if tool in SEND_TOOLS:
-            return Action(tool, args, "send", "dangerous", f"{tool}: " + json.dumps(redact(args))[:300],
+            if tool in ("email_send", "email_reply"):
+                body = str(args.get("body", ""))
+                summary = (f"Send email to {args.get('to', '?')} · subject: {args.get('subject', '(reply)')}\n"
+                           f"{body[:500]}{'…' if len(body) > 500 else ''}")
+            else:
+                summary = f"{tool}: " + json.dumps(redact(args))[:300]
+            return Action(tool, args, "send", "dangerous", summary,
                           "This leaves the computer (message, push, login or browser action).")
 
         if tool in READ_TOOLS:
             if resolved is not None and self._outside_workspace(resolved):
                 return Action(tool, args, "outside", "ask", f"Read outside workspace: {resolved}")
             return Action(tool, args, "read", "safe", f"{tool} {path_str or ''}".strip())
+        if tool in ACCOUNT_TOOLS:
+            return Action(tool, args, "account", "ask", f"{tool}: " + json.dumps(redact(args))[:200],
+                          "Reads a private account (mailbox).")
         if tool in NETWORK_READ_TOOLS:
             return Action(tool, args, "network_read", "safe", f"{tool}: " + json.dumps(redact(args))[:200])
 
@@ -202,6 +212,8 @@ def decide(level: AutonomyLevel, action: Action) -> str:
         return "ask"
     if cat in ("read", "network_read"):
         return "auto"
+    if cat == "account":
+        return "ask"
     if level == AutonomyLevel.OBSERVER:
         return "ask"
     if cat == "write":
@@ -356,7 +368,7 @@ class Pending:
             "warning": self.action.warning,
             "args": redact(self.action.args),
             "created": self.created,
-            "can_allow_session": self.action.category in ("write", "exec", "git_write")
+            "can_allow_session": self.action.category in ("write", "exec", "git_write", "account")
                                  and self.action.risk != "dangerous",
         }
 
@@ -427,6 +439,10 @@ class Governance:
             self.home, Path(__file__).resolve(), Path(__file__).with_name("security.py").resolve(),
             Path(__file__).with_name("approval.py").resolve(),
         ])
+        from evora.selftrack import WeaknessTracker
+        from evora.vault import Vault
+        self.vault = Vault(self.home / "vault.json")
+        self.tracker = WeaknessTracker(self.home / "weaknesses.json")
         self._level_file = self.home / "governance.json"
         self._grants: set[str] = set()
         self._level = level if level is not None else self._load_level()
@@ -468,7 +484,7 @@ class Governance:
         return action, mode
 
     def remember_grant(self, action: Action) -> None:
-        if action.risk != "dangerous" and action.category in ("write", "exec", "git_write"):
+        if action.risk != "dangerous" and action.category in ("write", "exec", "git_write", "account"):
             self._grants.add(action.key())
 
     def log_tool(self, action: Action, decision: str, success: Optional[bool] = None, detail: str = "") -> None:

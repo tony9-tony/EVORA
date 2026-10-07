@@ -126,6 +126,12 @@ class ChatAgent:
             if owner_said_yes:
                 security.revoke_owner(command=command, path=path)
 
+        self.last_screenshot = (getattr(result, "data", None) or {}).get("screenshot", "") if isinstance(getattr(result, "data", None), dict) else ""
+        if not result.success:
+            try:
+                self.governance.tracker.record("tool_failure", call.name, result.error or "")
+            except Exception:
+                pass
         self.governance.log_tool(action, decision, success=result.success,
                                  detail=(result.error or result.output or "")[:200])
         output = (result.output or "")[:MAX_TOOL_OUTPUT]
@@ -166,6 +172,10 @@ class ChatAgent:
                     yield {"type": "note", "text": f"{model_name} cannot call tools; answering in text only. "
                                                    "Switch to a coding model (e.g. qwen) for actions."}
                     continue
+                try:
+                    self.governance.tracker.record("model_error", model_name, str(e))
+                except Exception:
+                    pass
                 yield {"type": "error", "error": str(e)}
                 return
 
@@ -183,8 +193,12 @@ class ChatAgent:
                         result = ev[1]
                     else:
                         yield ev
-                yield {"type": "tool_result", "id": call.id, "name": call.name,
-                       "success": not result.error, "output": result.output[:2000], "error": result.error}
+                ev_out = {"type": "tool_result", "id": call.id, "name": call.name,
+                          "success": not result.error, "output": result.output[:2000], "error": result.error}
+                if getattr(self, "last_screenshot", ""):
+                    ev_out["screenshot"] = self.last_screenshot
+                    self.last_screenshot = ""
+                yield ev_out
                 result.output = result.output or result.error or ""
                 messages.append(Message(role=Role.TOOL, content=result.output, tool_result=result, name=call.name))
         else:

@@ -39,5 +39,18 @@ class DeletePathTool(Tool):
         return ToolResult(success=True, output=f"Moved to trash (id {manifest['id']}): {path}", data=manifest)
 
 
-def register_owner_tools(registry: ToolRegistry, governance) -> None:
+def register_owner_tools(registry: ToolRegistry, governance, browser_session=None) -> None:
     registry.register(DeletePathTool(registry.security, registry.logger, trash=governance.trash))
+    from evora.connectors.browser import BrowserActTool, BrowserReadTool, BrowserSearchTool, BrowserSession
+    from evora.connectors.email_tools import EmailReadTool, EmailSendTool
+    from evora.connectors.github import GithubReadTool, GithubWriteTool
+    session = browser_session or BrowserSession()
+    vault = governance.vault
+    sec, log = registry.security, registry.logger
+    registry.register(BrowserSearchTool(sec, log, session=session))
+    registry.register(BrowserReadTool(sec, log, session=session))
+    registry.register(BrowserActTool(sec, log, session=session, vault=vault))
+    registry.register(GithubReadTool(sec, log, vault=vault))
+    registry.register(GithubWriteTool(sec, log, vault=vault))
+    registry.register(EmailReadTool(sec, log, vault=vault))
+    registry.register(EmailSendTool(sec, log, vault=vault))

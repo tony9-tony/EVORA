@@ -90,6 +90,11 @@ class ChatSession:
             allowed_cmds=getattr(pc, "allowed_cmds", None) or [],
         )
         self.governance = Governance(self.security)
+        # Governance already put sensitive steps in front of the owner; a tool's own prompt for an
+        # ASK-level step (web, installs) must not block a step the owner approved. Dangerous steps
+        # still need the owner's explicit single-use grant (see ChatAgent).
+        from evora.security import PermissionLevel
+        self.security.add_approval_callback(lambda cmd, level, reason: level != PermissionLevel.DANGEROUS)
         self.registry = ToolRegistry(self.security, self.logger, identity_service=self.identity_service)
         register_owner_tools(self.registry, self.governance)
         self.agent = ChatAgent(self.manager, self.registry, self.governance,
