@@ -44,6 +44,33 @@ def tool_specs(registry: ToolRegistry) -> list[ToolSpec]:
     return specs
 
 
+GROUPS = {
+    "web": (r"search|google|browse|website|web|tafuta|internet|http|news|habari za", {"browser_search", "browser_read", "web_search", "web_fetch"}),
+    "github": (r"github|repo|issue|pull request|\bpr\b|commit", {"github_read", "github_write"}),
+    "email": (r"e-?mail|barua|inbox|mail|reply|jibu", {"email_read", "email_send"}),
+    "login": (r"log ?in|sign ?in|password|ingia|click|fill|form", {"browser_act", "browser_read"}),
+    "delete": (r"delete|remove|futa|ondoa", {"delete_path"}),
+}
+CORE = {"read_file", "list_files", "list_directory", "write_file", "edit_file", "execute_command", "run_tests", "search_files", "grep"}
+
+
+def select_specs(specs: list[ToolSpec], message: str, smart: bool = True) -> list[ToolSpec]:
+    """Small local models are slow because every tool description is re-read each request.
+    Send only the tools the message could plausibly need; plain chat gets none."""
+    import re
+    if not smart:
+        return specs
+    text = message or ""
+    wanted: set[str] = set()
+    for pattern, names in GROUPS.values():
+        if re.search(pattern, text, re.I):
+            wanted |= names
+    from evora.speed import CODE_HINTS
+    if CODE_HINTS.search(text) or re.search(r"file|folder|faili|read|soma|edit|run|test|fix|create|andika|tengeneza|list|taja|workspace", text, re.I):
+        wanted |= CORE
+    return [sp for sp in specs if sp.name in wanted]
+
+
 def _coerce_args(raw: Any) -> dict:
     if isinstance(raw, dict):
         return raw
@@ -145,7 +172,8 @@ class ChatAgent:
             yield {"type": "error", "error": "No model provider is active."}
             return
         messages.append(Message(role=Role.USER, content=user_input))
-        specs = tool_specs(self.registry)
+        all_specs = tool_specs(self.registry)
+        specs = select_specs(all_specs, user_input, smart=getattr(self, "smart_tools", True))
         full_text = ""
         steps = 0
 
