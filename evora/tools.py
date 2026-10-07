@@ -414,12 +414,13 @@ class ExecuteCommandTool(Tool):
         timeout_val = timeout or self.security.check_command_timeout(command)
 
         level_str = level.value.upper() if isinstance(level, PermissionLevel) else str(level)
-        if level_str == "DANGEROUS":
+        owner_ok = getattr(self.security, "owner_approved_command", lambda c: False)(command)
+        if level_str == "DANGEROUS" and not owner_ok:
             if self.logger:
                 self.logger.error(f"Blocked dangerous command: {command}")
             return ToolResult(success=False, error=f"Command blocked (dangerous): {command}")
 
-        if level_str == "ASK":
+        if level_str == "ASK" and not owner_ok:
             approved = self.security.request_approval(
                 command, PermissionLevel.ASK,
                 f"Executing command: {command}"

@@ -77,7 +77,8 @@ class Message:
                 "type": "function",
                 "function": {
                     "name": self.tool_call.name,
-                    "arguments": self.tool_call.arguments,
+                    "arguments": (self.tool_call.arguments if isinstance(self.tool_call.arguments, str)
+                                  else json.dumps(self.tool_call.arguments)),
                 }
             }]
         if self.tool_result:

@@ -65,13 +65,69 @@ class ChatSession:
             creator_line = ""
 
         self.system_prompt = (
-            "You are EVORA, an AI coding assistant. "
+            "You are EVORA, an AI software engineer working on your owner's computer. "
             f"Current identity: {current_identity.name} "
             f"(authority: {current_identity.authority.value}). "
             f"{creator_line}"
-            "Be helpful, concise, and direct."
+            "You can read and edit files, run commands, search the web and use git through tools. "
+            "Sensitive steps are shown to the owner as Accept/Deny cards; never try to bypass them. "
+            "Reply in the language the owner uses (English or Swahili). "
+            "Be helpful, concise, and direct. Prefer doing the task with tools over describing it."
         )
         self.messages: list[Message] = [Message(role=Role.SYSTEM, content=self.system_prompt)]
+
+        # Owner governance + tool-using agent
+        from evora.agent_loop import ChatAgent
+        from evora.governance import Governance
+        from evora.owner_tools import register_owner_tools
+        from evora.security import PermissionManager
+        from evora.tools import ToolRegistry
+        pc = getattr(config, "permissions", None)
+        self.security = PermissionManager(
+            workspace_dir=config.workspace_dir,
+            allow_file_write=getattr(pc, "allow_file_write", True),
+            allow_cmd_exec=getattr(pc, "allow_cmd_exec", True),
+            allowed_cmds=getattr(pc, "allowed_cmds", None) or [],
+        )
+        self.governance = Governance(self.security)
+        self.registry = ToolRegistry(self.security, self.logger, identity_service=self.identity_service)
+        register_owner_tools(self.registry, self.governance)
+        self.agent = ChatAgent(self.manager, self.registry, self.governance,
+                               workspace=Path(config.workspace_dir), logger=self.logger)
+
+        # Speed: choose coder / chat models from what Ollama has installed, keep them warm
+        self.models: dict = {}
+        self._setup_speed()
+
+    def _setup_speed(self) -> None:
+        import os
+        import threading
+        from evora import speed
+        active = self.manager.active
+        if active is None or active.name() != "ollama":
+            return
+        base = getattr(active, "_base_url", "")
+        try:
+            self.models = speed.pick_models(speed.list_models(base))
+        except Exception:
+            self.models = {}
+        if os.environ.get("EVORA_WARMUP", "1") != "0" and self.models.get("chat"):
+            threading.Thread(target=speed.warm_up, args=(base, self.models["chat"]), daemon=True).start()
+
+    def _route_model(self, message: str) -> None:
+        from evora import speed
+        active = self.manager.active
+        if not self.models or active is None or not hasattr(active, "switch_model"):
+            return
+        target = speed.route(message, self.models)
+        if target and target != active.model():
+            active.switch_model(target)
+
+    async def stream_agent(self, user_input: str, max_tokens: int = 1024):
+        """Tool-using chat turn. Yields the events documented in agent_loop."""
+        self._route_model(user_input)
+        async for event in self.agent.run(self.messages, user_input, max_tokens=max_tokens):
+            yield event
 
     async def process_message(self, user_input: str) -> dict:
         """Process a single user message and return the response payload."""
@@ -182,6 +238,8 @@ class ChatSession:
             "display_name": display_name,
             "workspace": self.config.workspace_dir,
             "memory_count": memory_count,
+            "autonomy": self.governance.describe(),
+            "models": self.models,
         }
 
     def close(self) -> None:

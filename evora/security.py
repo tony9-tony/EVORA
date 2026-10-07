@@ -83,6 +83,25 @@ class PermissionManager:
         self.allowed_cmds = allowed_cmds or []
         self.ask_approvals = ask_approvals
         self._approval_callbacks: list = []
+        # Single-use grants given by the owner through the approval card (see governance.py).
+        self._owner_commands: set[str] = set()
+        self._owner_paths: set[str] = set()
+
+    def grant_owner(self, command: Optional[str] = None, path: Optional[str] = None) -> None:
+        """Owner said yes to this exact command / path for the current tool call."""
+        if command is not None:
+            self._owner_commands.add(command)
+        if path is not None:
+            self._owner_paths.add(str(Path(path).resolve()))
+
+    def revoke_owner(self, command: Optional[str] = None, path: Optional[str] = None) -> None:
+        if command is not None:
+            self._owner_commands.discard(command)
+        if path is not None:
+            self._owner_paths.discard(str(Path(path).resolve()))
+
+    def owner_approved_command(self, command: str) -> bool:
+        return command in self._owner_commands
 
     def add_approval_callback(self, callback):
         """Register a callback that will be invoked for ASK-level operations."""
@@ -91,6 +110,8 @@ class PermissionManager:
     def check_workspace_path(self, path: str) -> Path:
         """Ensure a path is within the workspace directory."""
         resolved = Path(path).resolve()
+        if str(resolved) in self._owner_paths:
+            return resolved
         try:
             resolved.relative_to(self.workspace_dir)
             return resolved
@@ -143,6 +164,11 @@ class PermissionManager:
 
     def check_file_write(self, path: str) -> PermissionLevel:
         """Determine the permission level for writing to a file."""
+        try:
+            if str(Path(path).resolve()) in self._owner_paths:
+                return PermissionLevel.SAFE  # the owner approved this exact path
+        except Exception:
+            pass
         try:
             self.check_workspace_path(path)
         except PermissionError:
