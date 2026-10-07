@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>EVORA</title>
+<style>
+:root{
+  --bg:#07080d; --bg2:#0d0f18; --glass:rgba(255,255,255,.045); --glass2:rgba(255,255,255,.08);
+  --line:rgba(255,255,255,.09); --text:#e8ecf4; --dim:#9aa4b8; --mute:#667086;
+  --indigo:#7c7bff; --emerald:#2ee6a6; --rose:#ff5d7a; --amber:#ffb454; --sky:#4cc9f0;
+  --grad:linear-gradient(135deg,#7c7bff,#2ee6a6); --radius:16px;
+  --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+[data-theme=light]{
+  --bg:#f4f6fb; --bg2:#fff; --glass:rgba(15,20,40,.035); --glass2:rgba(15,20,40,.07);
+  --line:rgba(15,20,40,.12); --text:#151a2c; --dim:#4b566d; --mute:#7a859c;
+  --indigo:#5b5bf0; --emerald:#0fb583; --rose:#e0405e; --amber:#d98a1c;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);display:flex;flex-direction:column;overflow:hidden;
+  background-image:radial-gradient(900px 500px at 10% -10%,rgba(124,123,255,.14),transparent 60%),
+  radial-gradient(800px 500px at 100% 110%,rgba(46,230,166,.10),transparent 60%)}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);
+  background:var(--glass);backdrop-filter:blur(18px);z-index:5;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.18em;font-size:15px}
+.orb{width:30px;height:30px;border-radius:50%;position:relative;background:conic-gradient(from 0deg,#7c7bff,#2ee6a6,#4cc9f0,#7c7bff);
+  box-shadow:0 0 24px rgba(124,123,255,.55);animation:breathe 4s ease-in-out infinite}
+.orb::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--bg)}
+.orb[data-state=thinking]{animation:spin 1.1s linear infinite}
+.orb[data-state=listening]{background:conic-gradient(#ff5d7a,#ffb454,#ff5d7a);box-shadow:0 0 28px rgba(255,93,122,.7);animation:pulse .9s ease-in-out infinite}
+.orb[data-state=speaking]{animation:pulse .5s ease-in-out infinite}
+@keyframes breathe{50%{transform:scale(1.07);box-shadow:0 0 34px rgba(46,230,166,.5)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{50%{transform:scale(1.2)}}
+.pill{font-size:12px;color:var(--dim);border:1px solid var(--line);background:var(--glass);padding:5px 10px;border-radius:999px;white-space:nowrap}
+.spacer{flex:1}
+.seg{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:var(--glass)}
+.seg button{padding:6px 11px;font-size:12px;color:var(--dim);transition:.15s}
+.seg button.on{background:var(--grad);color:#06100c;font-weight:700}
+.seg button:hover:not(.on){background:var(--glass2)}
+.ibtn{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--glass);display:grid;place-items:center;font-size:15px}
+.ibtn:hover{background:var(--glass2)} .ibtn.on{background:var(--grad);color:#06100c}
+main{flex:1;display:flex;min-height:0}
+#chatCol{flex:1;display:flex;flex-direction:column;min-width:0}
+#feed>*{flex-shrink:0}
+#feed{flex:1;overflow-y:auto;padding:22px clamp(14px,5vw,64px);display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth}
+.msg{max-width:min(820px,100%);padding:12px 16px;border-radius:var(--radius);line-height:1.55;font-size:15px;
+  word-wrap:break-word;white-space:pre-wrap;animation:rise .25s ease}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}}
+.msg.user{align-self:flex-end;background:linear-gradient(135deg,rgba(124,123,255,.28),rgba(46,230,166,.16));border:1px solid var(--line)}
+.msg.ai{align-self:flex-start;background:var(--glass);border:1px solid var(--line)}
+.msg.sys{align-self:center;font-size:12.5px;color:var(--dim);background:none;border:1px dashed var(--line)}
+.msg code{font-family:var(--mono);font-size:13px;background:var(--glass2);padding:1px 6px;border-radius:6px}
+.msg pre{font-family:var(--mono);font-size:13px;background:#05060a;color:#d6e2ff;padding:12px 14px;border-radius:12px;
+  overflow-x:auto;margin:8px 0;border:1px solid var(--line);white-space:pre}
+[data-theme=light] .msg pre{background:#0f1424}
+.tool{align-self:flex-start;width:min(820px,100%);border:1px solid var(--line);border-left:3px solid var(--sky);
+  border-radius:12px;background:var(--glass);font-size:13px;overflow:hidden;animation:rise .25s ease}
+.tool.ok{border-left-color:var(--emerald)} .tool.fail{border-left-color:var(--rose)}
+.tool summary{cursor:pointer;padding:9px 12px;display:flex;gap:10px;align-items:center;list-style:none}
+.tool summary::-webkit-details-marker{display:none}
+.tool .name{font-family:var(--mono);font-weight:600}
+.tool .sum{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool .st{font-size:11px;color:var(--mute)}
+.tool pre{font-family:var(--mono);font-size:12px;padding:10px 12px;border-top:1px solid var(--line);max-height:220px;overflow:auto;white-space:pre-wrap;color:var(--dim)}
+.approval{align-self:flex-start;width:min(820px,100%);border:1px solid var(--amber);border-radius:14px;padding:14px 16px;
+  background:linear-gradient(135deg,rgba(255,180,84,.12),rgba(255,93,122,.07));animation:rise .25s ease}
+.approval.danger{border-color:var(--rose)}
+.approval h4{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--amber);margin-bottom:6px;display:flex;gap:8px;align-items:center}
+.approval.danger h4{color:var(--rose)}
+.approval .what{font-family:var(--mono);font-size:13px;margin:6px 0;word-break:break-all}
+.approval .warn{font-size:12.5px;color:var(--dim);margin-bottom:10px}
+.approval .row{display:flex;gap:8px;flex-wrap:wrap}
+.btn{padding:9px 16px;border-radius:10px;font-weight:600;font-size:13px;border:1px solid var(--line)}
+.btn.accept{background:var(--grad);color:#06100c;border:0}
+.btn.sess{background:var(--glass2)} .btn.deny{background:rgba(255,93,122,.16);color:var(--rose);border-color:rgba(255,93,122,.4)}
+.btn:disabled{opacity:.5;cursor:default}
+.approval.done{opacity:.6}
+#composer{padding:12px clamp(14px,5vw,64px) calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--glass);backdrop-filter:blur(18px)}
+.box{display:flex;gap:10px;align-items:flex-end;border:1px solid var(--line);border-radius:18px;padding:8px 8px 8px 16px;background:var(--bg2);max-width:900px;margin:0 auto}
+.box:focus-within{border-color:var(--indigo);box-shadow:0 0 0 3px rgba(124,123,255,.18)}
+textarea{flex:1;resize:none;border:0;outline:0;background:none;color:var(--text);font:inherit;font-size:15px;line-height:1.5;max-height:160px;padding:6px 0}
+.send{width:40px;height:40px;border-radius:50%;background:var(--grad);color:#06100c;font-size:18px;font-weight:700}
+.send:disabled{opacity:.4}
+.mic{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);font-size:17px;background:var(--glass)}
+.mic.rec{background:var(--rose);color:#fff;animation:pulse .9s infinite}
+.hint{max-width:900px;margin:6px auto 0;font-size:11.5px;color:var(--mute);display:flex;justify-content:space-between;gap:10px}
+aside{width:340px;border-left:1px solid var(--line);background:var(--glass);backdrop-filter:blur(18px);display:flex;flex-direction:column;min-height:0}
+aside .tabs{display:flex;border-bottom:1px solid var(--line)}
+aside .tabs button{flex:1;padding:11px 6px;font-size:12.5px;color:var(--dim);border-bottom:2px solid transparent}
+aside .tabs button.on{color:var(--text);border-bottom-color:var(--emerald)}
+aside .tabs .badge{background:var(--rose);color:#fff;border-radius:999px;font-size:10px;padding:1px 6px;margin-left:4px}
+.panel{flex:1;overflow-y:auto;padding:12px;display:none;font-size:13px}
+.panel.on{display:block}
+.item{border:1px solid var(--line);border-radius:12px;padding:9px 11px;margin-bottom:8px;background:var(--bg2)}
+.item .t{font-family:var(--mono);font-size:12px;color:var(--dim);word-break:break-all}
+.lv{padding:10px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;cursor:pointer;background:var(--bg2)}
+.lv.on{border-color:var(--emerald);box-shadow:0 0 0 2px rgba(46,230,166,.18)}
+.lv b{display:block;margin-bottom:2px} .lv span{color:var(--dim);font-size:12px}
+.empty{color:var(--mute);text-align:center;padding:30px 10px}
+.ok-badge{color:var(--emerald)} .bad-badge{color:var(--rose)}
+#sheetBtn{display:none}
+@media(max-width:900px){
+  aside{position:fixed;right:0;top:0;bottom:0;width:min(92vw,360px);transform:translateX(105%);transition:.25s;z-index:20;background:var(--bg2)}
+  aside.open{transform:none;box-shadow:-20px 0 60px rgba(0,0,0,.5)}
+  #sheetBtn{display:grid}
+  header .pill.model{display:none}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="orb" id="orb" data-state="idle"></div><span>EVORA</span></div>
+  <span class="pill model" id="modelPill">connecting…</span>
+  <span class="pill" id="idPill"></span>
+  <div class="spacer"></div>
+  <div class="seg" id="levelSeg" title="Autonomy level — only you can change this"></div>
+  <div class="seg" id="langSeg" title="Voice language">
+    <button data-l="auto" class="on">Auto</button><button data-l="en">EN</button><button data-l="sw">SW</button>
+  </div>
+  <button class="ibtn" id="speakBtn" title="Read answers aloud">🔊</button>
+  <button class="ibtn" id="themeBtn" title="Theme">🌗</button>
+  <button class="ibtn" id="sheetBtn" title="Panel">☰</button>
+</header>
+<main>
+  <section id="chatCol">
+    <div id="feed"></div>
+    <div id="composer">
+      <div class="box">
+        <textarea id="input" rows="1" placeholder="Ask EVORA… / Muulize…" autofocus></textarea>
+        <button class="mic" id="mic" title="Speak (English / Kiswahili)">🎤</button>
+        <button class="send" id="send" title="Send">➤</button>
+      </div>
+      <div class="hint"><span id="hintL">Enter to send · Shift+Enter for new line</span><span id="stateTxt"></span></div>
+    </div>
+  </section>
+  <aside id="side">
+    <div class="tabs">
+      <button data-p="pAct" class="on">Activity</button>
+      <button data-p="pApp">Approvals<span class="badge" id="appBadge" hidden>0</span></button>
+      <button data-p="pLvl">Autonomy</button>
+      <button data-p="pAud">Audit</button>
+    </div>
+    <div class="panel on" id="pAct"><div class="empty">Tool activity appears here live.</div></div>
+    <div class="panel" id="pApp"><div class="empty">Nothing waiting for you.</div></div>
+    <div class="panel" id="pLvl"></div>
+    <div class="panel" id="pAud"></div>
+  </aside>
+</main>
+<script>
+(()=>{
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const feed=$('#feed'), input=$('#input'), sendBtn=$('#send'), orb=$('#orb');
+let busy=false, lang='auto', speakOn=false, es=null, levels=[], curLevel=1, curAI=null, curText='';
+
+const STR={en:{ph:'Ask EVORA…',hint:'Enter to send · Shift+Enter for new line'},
+           sw:{ph:'Muulize EVORA…',hint:'Enter kutuma · Shift+Enter mstari mpya'}};
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function md(t){
+  let h=esc(t);
+  h=h.replace(/```(\w*)\n?([\s\S]*?)```/g,(_,l,c)=>'<pre>'+c.replace(/\n$/,'')+'</pre>');
+  h=h.replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>');
+  return h;
+}
+function setOrb(s){orb.dataset.state=s}
+function scroll(){feed.scrollTop=feed.scrollHeight}
+function add(cls,html){const d=document.createElement('div');d.className='msg '+cls;d.innerHTML=html;feed.appendChild(d);scroll();return d}
+function sys(t){add('sys',esc(t))}
+async function api(path,opt={}){
+  const r=await fetch(path,{credentials:'same-origin',...opt});
+  if(r.status===401){askToken();throw new Error('Owner token required')}
+  return r;
+}
+function askToken(){
+  const t=prompt('Owner token (shown in the EVORA terminal / ~/.evora/web_token):');
+  if(t)location.href='/?token='+encodeURIComponent(t);
+}
+
+/* ---------- status, autonomy ---------- */
+async function loadStatus(){
+  try{
+    const d=await (await api('/api/status')).json();
+    $('#modelPill').textContent=(d.provider||'?')+' · '+(d.model||'?');
+    $('#idPill').textContent=d.display_name||d.identity||'';
+    if(d.autonomy){levels=d.autonomy.levels;curLevel=d.autonomy.level;drawLevels()}
+    window.voiceServer=!!d.voice_server;
+  }catch(e){$('#modelPill').textContent='offline'}
+}
+function drawLevels(){
+  const seg=$('#levelSeg');seg.innerHTML='';
+  levels.forEach(l=>{const b=document.createElement('button');b.textContent='L'+l.level;b.title=l.name+' — '+l.description;
+    if(l.level===curLevel)b.className='on';b.onclick=()=>setLevel(l.level);seg.appendChild(b)});
+  const p=$('#pLvl');p.innerHTML='';
+  levels.forEach(l=>{const d=document.createElement('div');d.className='lv'+(l.level===curLevel?' on':'');
+    d.innerHTML='<b>L'+l.level+' · '+esc(l.name)+'</b><span>'+esc(l.description)+'</span>';d.onclick=()=>setLevel(l.level);p.appendChild(d)});
+  const n=document.createElement('div');n.className='empty';
+  n.textContent='Deleting, sending, logins and changes to EVORA itself always ask you — at every level.';p.appendChild(n);
+}
+async function setLevel(n){
+  try{const d=await (await api('/api/autonomy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level:n})})).json();
+    if(d.levels){levels=d.levels;curLevel=d.level;drawLevels();sys('Autonomy set to L'+d.level+' · '+d.name)}}catch(e){}
+}
+
+/* ---------- activity / approvals / audit ---------- */
+function act(html){const p=$('#pAct');if(p.querySelector('.empty'))p.innerHTML='';const d=document.createElement('div');d.className='item';d.innerHTML=html;p.prepend(d);return d}
+async function pollApprovals(){
+  try{
+    const d=await (await api('/api/approvals')).json();
+    const p=$('#pApp');p.innerHTML='';
+    $('#appBadge').hidden=!d.pending.length;$('#appBadge').textContent=d.pending.length;
+    if(!d.pending.length){p.innerHTML='<div class="empty">Nothing waiting for you.</div>';return}
+    d.pending.forEach(a=>{const it=document.createElement('div');it.className='item';
+      it.innerHTML='<b>'+esc(a.tool)+'</b> <span class="pill">'+esc(a.risk)+'</span><div class="t">'+esc(a.summary)+'</div>';
+      const r=document.createElement('div');r.className='row';r.style.marginTop='8px';
+      [['Accept','allow','accept'],['Deny','deny','deny']].forEach(([t,dec,c])=>{const b=document.createElement('button');b.className='btn '+c;b.textContent=t;
+        b.onclick=()=>decide(a.id,dec);r.appendChild(b)});it.appendChild(r);p.appendChild(it)});
+  }catch(e){}
+}
+async function decide(id,decision,card){
+  try{
+    await api('/api/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,decision})});
+    if(card){card.classList.add('done');card.querySelectorAll('button').forEach(b=>b.disabled=true);
+      const s=document.createElement('div');s.className='warn';s.textContent=decision==='deny'?'Denied':'Accepted'+(decision==='allow_session'?' for this session':'');card.appendChild(s)}
+    pollApprovals();
+  }catch(e){sys('Could not send your decision: '+e.message)}
+}
+async function loadAudit(){
+  const p=$('#pAud');
+  try{
+    const d=await (await api('/api/audit?limit=60')).json();
+    const t=await (await api('/api/trash')).json();
+    let h='<div class="item"><b class="'+(d.intact?'ok-badge':'bad-badge')+'">'+(d.intact?'● Log intact':'● LOG TAMPERED')+'</b> · '+d.records+' records</div>';
+    if(t.items.length){h+='<div class="item"><b>Trash</b>'+t.items.slice(-8).map(i=>'<div class="t">'+esc(i.original)+' <a href="#" data-r="'+esc(i.id)+'" style="color:var(--emerald)">restore</a></div>').join('')+'</div>'}
+    h+=d.entries.slice().reverse().map(e=>'<div class="item"><b>'+esc(e.event)+'</b> <span class="t">'+new Date(e.ts*1000).toLocaleTimeString()+'</span><div class="t">'+esc([e.tool,e.category,e.decision||'',e.summary||''].filter(Boolean).join(' · '))+'</div></div>').join('');
+    p.innerHTML=h;
+    p.querySelectorAll('[data-r]').forEach(a=>a.onclick=async ev=>{ev.preventDefault();
+      await api('/api/trash/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:a.dataset.r})});loadAudit()});
+  }catch(e){p.innerHTML='<div class="empty">Owner token needed to view the audit log.</div>'}
+}
+$$('.tabs button').forEach(b=>b.onclick=()=>{$$('.tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  $$('.panel').forEach(x=>x.classList.remove('on'));$('#'+b.dataset.p).classList.add('on');
+  if(b.dataset.p==='pAud')loadAudit();if(b.dataset.p==='pApp')pollApprovals()});
+
+/* ---------- chat ---------- */
+function finishTurn(){busy=false;sendBtn.disabled=false;setOrb('idle');$('#stateTxt').textContent='';if(es){es.close();es=null}}
+function send(text){
+  text=(text||input.value).trim();if(!text||busy)return;
+  input.value='';autosize();add('user',esc(text));busy=true;sendBtn.disabled=true;setOrb('thinking');$('#stateTxt').textContent='thinking…';
+  curAI=null;curText='';const tools={};
+  es=new EventSource('/api/chat/stream?message='+encodeURIComponent(text));
+  const on=(n,fn)=>es.addEventListener(n,e=>fn(JSON.parse(e.data)));
+  on('content',d=>{curText+=d.content;if(!curAI)curAI=add('ai','');curAI.innerHTML=md(curText);scroll()});
+  on('tool_start',d=>{curAI=null;const el=document.createElement('details');el.className='tool';
+    el.innerHTML='<summary><span class="name">'+esc(d.name)+'</span><span class="sum">'+esc(d.summary||'')+'</span><span class="st">running…</span></summary><pre>'+esc(JSON.stringify(d.args,null,1))+'</pre>';
+    feed.appendChild(el);tools[d.id]=el;scroll();act('<b>'+esc(d.name)+'</b><div class="t">'+esc(d.summary||'')+'</div>')});
+  on('approval_request',d=>{const a=d.approval;const el=document.createElement('div');el.className='approval'+(a.risk==='dangerous'?' danger':'');
+    el.innerHTML='<h4>'+(a.risk==='dangerous'?'⚠ Needs your approval':'Needs your approval')+'</h4><div>EVORA wants to:</div><div class="what">'+esc(a.summary)+'</div>'+(a.warning?'<div class="warn">'+esc(a.warning)+'</div>':'')+'<div class="row"></div>';
+    const row=el.querySelector('.row');
+    const mk=(t,dec,c)=>{const b=document.createElement('button');b.className='btn '+c;b.textContent=t;b.onclick=()=>decide(a.id,dec,el);row.appendChild(b)};
+    mk('Accept','allow','accept');if(a.can_allow_session)mk('Allow for this session','allow_session','sess');mk('Deny','deny','deny');
+    feed.appendChild(el);scroll();setOrb('idle');$('#stateTxt').textContent='waiting for you…';pollApprovals()});
+  on('approval_result',()=>{setOrb('thinking');$('#stateTxt').textContent='working…'});
+  on('tool_result',d=>{const el=tools[d.id];if(!el)return;el.classList.add(d.success?'ok':'fail');
+    el.querySelector('.st').textContent=d.success?'done':'failed';
+    const pre=document.createElement('pre');pre.textContent=(d.error||d.output||'(no output)').slice(0,2000);el.appendChild(pre)});
+  on('note',d=>sys(d.text));
+  on('error',d=>{sys('Error: '+d.error);finishTurn()});
+  on('done',d=>{if(speakOn&&curText)speak(curText);finishTurn();loadStatus()});
+  es.onerror=()=>{if(busy){sys('Connection lost.');finishTurn()}};
+}
+function autosize(){input.style.height='auto';input.style.height=Math.min(input.scrollHeight,160)+'px'}
+input.addEventListener('input',autosize);
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+sendBtn.onclick=()=>send();
+
+/* ---------- voice ---------- */
+const sttLang=()=>lang==='sw'?'sw-TZ':lang==='en'?'en-US':(navigator.language||'en-US');
+function speak(text){
+  if(!('speechSynthesis' in window))return;
+  const clean=text.replace(/```[\s\S]*?```/g,' code block ').replace(/[`*#]/g,'');
+  const u=new SpeechSynthesisUtterance(clean.slice(0,900));u.lang=lang==='sw'?'sw-TZ':'en-US';
+  u.onstart=()=>setOrb('speaking');u.onend=()=>setOrb('idle');speechSynthesis.cancel();speechSynthesis.speak(u);
+}
+let rec=null, chunks=[], browserRec=null;
+async function startMic(){
+  if(window.voiceServer&&navigator.mediaDevices){
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      rec=new MediaRecorder(stream);chunks=[];rec.ondataavailable=e=>chunks.push(e.data);
+      rec.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());setOrb('thinking');$('#stateTxt').textContent='transcribing…';
+        try{const r=await api('/api/transcribe?lang='+(lang==='auto'?'':lang),{method:'POST',body:new Blob(chunks,{type:rec.mimeType})});
+          const d=await r.json();if(d.text){input.value=d.text;autosize();send()}else sys('Did not catch that.')}
+        catch(e){sys('Transcription failed: '+e.message)}finally{if(!busy)setOrb('idle');$('#stateTxt').textContent=''}};
+      rec.start();$('#mic').classList.add('rec');setOrb('listening');$('#stateTxt').textContent='listening… tap to stop';return;
+    }catch(e){sys('Microphone not available: '+e.message)}
+  }
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){sys('Voice needs Chrome/Edge, or install faster-whisper on the PC (pip install faster-whisper).');return}
+  browserRec=new SR();browserRec.lang=sttLang();browserRec.interimResults=false;
+  browserRec.onresult=e=>{input.value=e.results[0][0].transcript;autosize();send()};
+  browserRec.onend=()=>{$('#mic').classList.remove('rec');if(!busy)setOrb('idle');$('#stateTxt').textContent=''};
+  browserRec.onerror=e=>sys('Voice error: '+e.error);
+  browserRec.start();$('#mic').classList.add('rec');setOrb('listening');$('#stateTxt').textContent='listening…';
+}
+function stopMic(){if(rec&&rec.state==='recording'){rec.stop();rec=null}else if(browserRec){browserRec.stop();browserRec=null}$('#mic').classList.remove('rec')}
+$('#mic').onclick=()=>{($('#mic').classList.contains('rec'))?stopMic():startMic()};
+
+/* ---------- toggles ---------- */
+$$('#langSeg button').forEach(b=>b.onclick=()=>{lang=b.dataset.l;$$('#langSeg button').forEach(x=>x.classList.toggle('on',x===b));
+  const s=STR[lang==='sw'?'sw':'en'];input.placeholder=s.ph;$('#hintL').textContent=s.hint});
+$('#speakBtn').onclick=e=>{speakOn=!speakOn;e.currentTarget.classList.toggle('on',speakOn);if(!speakOn)speechSynthesis&&speechSynthesis.cancel()};
+$('#themeBtn').onclick=()=>{const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('evora-theme',r.dataset.theme)}catch(e){}};
+try{const t=localStorage.getItem('evora-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}
+$('#sheetBtn').onclick=()=>$('#side').classList.toggle('open');
+
+sys('EVORA is ready. Ask in English or Kiswahili. Sensitive steps will ask you first.');
+loadStatus();pollApprovals();setInterval(pollApprovals,2500);setInterval(loadStatus,45000);
+})();
+</script>
+</body>
+</html>

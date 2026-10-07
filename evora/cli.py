@@ -780,7 +780,12 @@ def async_chat(args):
     config = load_config()
     logger = Logger("evora", config.log_level, config.log_file)
     provider_override = getattr(args, "provider", None)
-    start_chat_server(config=config, logger=logger, provider_override=provider_override)
+    workspace = getattr(args, "workspace", None)
+    if workspace:
+        config.workspace_dir = workspace
+    start_chat_server(config=config, logger=logger, provider_override=provider_override,
+                      port=getattr(args, "port", 8080), host=getattr(args, "host", "127.0.0.1"),
+                      open_browser=not getattr(args, "no_browser", False))
     return 0
 
 
@@ -823,6 +828,10 @@ Examples:
     chat_parser = subparsers.add_parser("chat", help="Interactive chat with EVORA")
     chat_parser.add_argument("--workspace", type=str, default=None, help="Workspace directory")
     chat_parser.add_argument("--provider", type=str, default=None, help="Model provider (openai, ollama, anthropic)")
+    chat_parser.add_argument("--port", type=int, default=8080, help="Port for the web console")
+    chat_parser.add_argument("--host", type=str, default="127.0.0.1",
+                             help="127.0.0.1 = this PC only; 0.0.0.0 = reachable from other devices (token required)")
+    chat_parser.add_argument("--no-browser", action="store_true", help="Do not open the browser automatically")
 
     plan_parser = subparsers.add_parser("plan", help="Generate a plan without executing")
     plan_parser.add_argument("request", type=str, help="The task description")

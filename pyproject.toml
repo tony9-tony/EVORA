@@ -26,4 +26,4 @@ where = ["."]
 include = ["evora*"]
 
 [tool.setuptools.package-data]
-evora = ["*.yaml", "*.yml"]
+evora = ["*.yaml", "*.yml", "web/*.html"]
